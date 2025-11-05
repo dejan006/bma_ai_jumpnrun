@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jump'n'Run – Prompt-Projekt</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100%; background: #000;
+      color: #eaeaea; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    #wrap { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #overlay {
+      position: absolute; left: 12px; top: 12px; padding: 6px 10px;
+      background: rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.1);
+      border-radius: 10px; font-size: 14px; user-select: none; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game"></canvas>
+    <div id="overlay"><b>Hello Game</b> – Prompt 1</div>
+  </div>
+
+  <!-- Reihenfolge beachten: Utils → Engine → Main -->
+  <script src="src/util/math.js"></script>
+  <script src="src/util/input.js"></script>
+  <script src="src/engine.js"></script>
+  <script src="src/main.js"></script>
+</body>
+</html>
