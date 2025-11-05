@@ -1,42 +1,39 @@
-// Game Main – verbindet Engine, Input und Physik mit einem Test-Koerper.
-// Prompt 2 Ergebnis: Gravitation, AABB-Kollision, horizontale/vertikale Sweeps.
-// Steuerung: A/D oder Pfeile = laufen, SPACE = kleiner Testsprung, R = Reset.
+// Game Main – verwendet Player-Entity mit Coyote-Time & Jump-Buffer.
+// Ergebnis Prompt 3:
+// - Horizontal: A/D oder Pfeile
+// - Sprung: Space/W/ArrowUp (Coyote & Buffer aktiv)
+// - ExtraJumps = 0
+// - Flip nach Blickrichtung
+// - Rendering als gelbes Rechteck
+//
+// Hinweise:
+// - PX_PER_M steuert "Zoom". Kamera folgt sanft der Figur.
+// - R setzt den Spieler zurueck.
 
 (function () {
   'use strict';
 
-  const { Engine, moveAndCollide } = window.Game.Engine;
+  const { Engine } = window.Game.Engine;
   const Input = window.Game.Input;
   const Platforms = (window.Game.World && window.Game.World.platforms) || [];
+  const Player = window.Game.Entities.Player;
 
   const canvas = document.getElementById('game');
-
-  // Rendering-Scale: 1 Meter = 40 Pixel
   const PX_PER_M = 40;
 
-  // Welt-State
   const state = {
     time: 0,
     viewport: { w: 0, h: 0, dpr: 1 },
     gravity: 40,
     frictionGround: 18,
     frictionAir: 2,
-    // einfacher Player-Testkoerper
-    player: {
-      x: 0, y: 0, w: 0.9, h: 1.6,
-      vx: 0, vy: 0,
-      speed: 12,
-      onGround: false
-    },
-    camera: { x: 0, y: 0, smooth: 0.12, offsetX: 0, offsetY: 2 }
+
+    player: Player.create(0, 0),
+    camera: { x: 0, y: 0, offsetX: 0, offsetY: 2 }
   };
 
   function resetPlayer() {
-    state.player.x = 0;
-    state.player.y = 0;
-    state.player.vx = 0;
-    state.player.vy = 0;
-    state.player.onGround = false;
+    state.player.reset(0, 0);
     state.camera.x = state.player.x;
     state.camera.y = state.player.y;
   }
@@ -58,77 +55,65 @@
     state.time += dt;
     initOnce();
 
-    const p = state.player;
+    // Spieler-Update (inkl. Coyote/Buffer)
+    state.player.update(
+      state.time,
+      dt,
+      Input,
+      Platforms,
+      { gravity: state.gravity, frictionGround: state.frictionGround, frictionAir: state.frictionAir }
+    );
 
-    // --- Input horizontal ---
-    const left  = Input.pressed('ArrowLeft') || Input.pressed('KeyA');
-    const right = Input.pressed('ArrowRight') || Input.pressed('KeyD');
-    let dir = (left ? -1 : 0) + (right ? 1 : 0);
-
-    const accel = p.onGround ? state.frictionGround : state.frictionAir;
-    const target = dir * p.speed * (p.onGround ? 1.0 : 0.9);
-    // Bequeme Annäherung an Zielgeschwindigkeit:
-    p.vx = target + (p.vx - target) * Math.exp(-accel * dt);
-
-    // --- einfacher Testsprung ---
-    if (Input.pressed('Space') && p.onGround) {
-      p.vy = -16; // negativ = nach oben (Screen y+) geht nach unten
-    }
-
-    // Gravitation
-    p.vy += state.gravity * dt;
-
-    // Bewegen + Kollision
-    const moved = moveAndCollide(p, dt, Platforms);
-    p.x = moved.x; p.y = moved.y; p.vx = moved.vx; p.vy = moved.vy;
-    p.onGround = moved.landed;
-
-    // Kamera folgt leicht
+    // Kamera folgt sanft dem Spieler-Mittelpunkt
     const vw = state.viewport.w / PX_PER_M;
     const vh = state.viewport.h / PX_PER_M;
-    const cxTarget = (p.x + p.w * 0.5) - vw * 0.5 + state.camera.offsetX;
-    const cyTarget = (p.y + p.h * 0.5) - vh * 0.5 + state.camera.offsetY;
+    const pxCenterX = state.player.x + state.player.w * 0.5;
+    const pxCenterY = state.player.y + state.player.h * 0.5;
+    const targetX = pxCenterX - vw * 0.5 + state.camera.offsetX;
+    const targetY = pxCenterY - vh * 0.5 + state.camera.offsetY;
     const smooth = 1 - Math.exp(-8 * dt);
-    state.camera.x += (cxTarget - state.camera.x) * smooth;
-    state.camera.y += (cyTarget - state.camera.y) * smooth;
+    state.camera.x += (targetX - state.camera.x) * smooth;
+    state.camera.y += (targetY - state.camera.y) * smooth;
 
-    // Reset (R)
+    // Reset
     if (Input.pressed('KeyR')) resetPlayer();
   }
 
   function worldToScreen(x, y) {
-    // Kamera in Metern, wir rendern in Pixel
     const sx = Math.round((x - state.camera.x) * PX_PER_M + state.viewport.w / 2);
     const sy = Math.round((y - state.camera.y) * PX_PER_M + state.viewport.h / 2);
     return { x: sx, y: sy };
   }
 
-  function drawRect(ctx, x, y, w, h, color) {
+  function drawPlatform(ctx, x, y, w, h, color) {
     const a = worldToScreen(x, y);
     ctx.fillStyle = color;
     ctx.fillRect(a.x, a.y, Math.round(w * PX_PER_M), Math.round(h * PX_PER_M));
   }
 
   function onRender(ctx) {
-    // Hintergrund (schwarz wie gefordert)
+    // Hintergrund
     ctx.clearRect(0, 0, state.viewport.w, state.viewport.h);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, state.viewport.w, state.viewport.h);
 
     // Plattformen
     for (const p of Platforms) {
-      drawRect(ctx, p.x, p.y, p.w, p.h, '#2b2f45');
+      drawPlatform(ctx, p.x, p.y, p.w, p.h, '#2b2f45');
     }
 
-    // Player (gelbes Rechteck)
-    const pl = state.player;
-    drawRect(ctx, pl.x, pl.y, pl.w, pl.h, '#f4d35e');
+    // Spieler
+    state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
 
-    // Minimale Debug-Info unten rechts (optional, sehr dezent)
+    // Debug-Hinweis klein unten rechts
     ctx.fillStyle = 'rgba(255,255,255,.6)';
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText(`v=(${pl.vx.toFixed(2)}, ${pl.vy.toFixed(2)}) ground=${pl.onGround ? 'ja' : 'nein'}`, state.viewport.w - 10, state.viewport.h - 10);
+    ctx.fillText(
+      `v=(${state.player.vx.toFixed(2)}, ${state.player.vy.toFixed(2)}) ground=${state.player.onGround ? 'ja' : 'nein'}`,
+      state.viewport.w - 10,
+      state.viewport.h - 10
+    );
   }
 
   const engine = new Engine(canvas, { onUpdate, onRender, onResize });

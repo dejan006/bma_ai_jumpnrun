@@ -1,9 +1,8 @@
 // Game.Engine + einfache 2D-Physik (AABB) mit separater Achsenauflösung.
-// - Fixed-Timestep Loop wie in Prompt 1
-// - Gravitation
-// - Horizontale und vertikale Sweeps gegen rechteckige Plattformen
-// - Boden-Erkennung (landed)
-// Einheiten: "Meter" (abstrakt). Rendering skaliert in main.js.
+// - Fixed-Timestep Loop
+// - Gravitation wird von Entities genutzt (hier keine globale Physik)
+// - moveAndCollide: horizontale/vertikale Sweeps
+// - aabbOverlap: Kollisionstest
 
 window.Game = window.Game || {};
 window.Game.Engine = (function () {
@@ -14,10 +13,6 @@ window.Game.Engine = (function () {
   const MAX_FRAME = 0.25;
 
   class Engine {
-    /**
-     * @param {HTMLCanvasElement} canvas
-     * @param {{onUpdate:function, onRender:function, onResize:function}} opts
-     */
     constructor(canvas, opts) {
       this.canvas = canvas;
       this.ctx = canvas.getContext('2d');
@@ -67,53 +62,37 @@ window.Game.Engine = (function () {
     }
   }
 
-  // -------------------- Physik (AABB) --------------------
-
-  /**
-   * Axis-Aligned Bounding Box Kollisionsprüfung.
-   */
+  // ---- AABB Utilities ----
   function aabbOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
     return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
   }
 
-  /**
-   * Bewege einen Korpus (Rect) und kollidiere gegen Plattformen.
-   * Separater Sweep: erst X, dann Y. Liefert Info, ob gelandet wurde.
-   *
-   * @param {object} body {x,y,w,h,vx,vy}
-   * @param {number} dt
-   * @param {Array<{x,y,w,h}>} platforms
-   * @returns {{x:number,y:number,vx:number,vy:number,hitX:boolean,hitY:boolean,landed:boolean}}
-   */
   function moveAndCollide(body, dt, platforms) {
     let { x, y, w, h, vx, vy } = body;
-    let hitX = false, hitY = false, landed = false;
-
     // Horizontal
     x += vx * dt;
     for (const p of platforms) {
       if (aabbOverlap(x, y, w, h, p.x, p.y, p.w, p.h)) {
         if (vx > 0) x = p.x - w;
         else if (vx < 0) x = p.x + p.w;
-        vx = 0; hitX = true;
+        vx = 0;
       }
     }
-
     // Vertikal
     y += vy * dt;
+    let landed = false;
     for (const p of platforms) {
       if (aabbOverlap(x, y, w, h, p.x, p.y, p.w, p.h)) {
-        if (vy > 0) { // fallend (nach unten im Screen)
+        if (vy > 0) { // fallend (Screen y+ nach unten)
           y = p.y - h;
           landed = true;
         } else if (vy < 0) {
           y = p.y + p.h;
         }
-        vy = 0; hitY = true;
+        vy = 0;
       }
     }
-
-    return { x, y, vx, vy, hitX, hitY, landed };
+    return { x, y, vx, vy, landed };
   }
 
   return { Engine, FIXED_DT, aabbOverlap, moveAndCollide };
