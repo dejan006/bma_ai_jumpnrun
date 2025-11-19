@@ -21,16 +21,18 @@
 <body>
   <div id="wrap">
     <canvas id="game"></canvas>
-    <div id="overlay"><b>Hello Game</b> – Prompt 1–5</div>
+    <div id="overlay"><b>Hello Game</b> – Prompt 1–6</div>
   </div>
 
-  <!-- Reihenfolge: Utils → Engine → Entities → Camera → LevelLoader → Main -->
+  <!-- Reihenfolge: Utils → Engine → Entities → Camera → World → Render → Main -->
   <script src="src/util/math.js"></script>
   <script src="src/util/input.js"></script>
   <script src="src/engine.js"></script>
   <script src="src/entities/player.js"></script>
   <script src="src/camera.js"></script>
   <script src="src/world/levelLoader.js"></script>
+  <script src="src/render/background.js"></script>
+  <script src="src/render/tiles.js"></script>
   <script src="src/main.js"></script>
 </body>
 </html>
