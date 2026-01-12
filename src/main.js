@@ -1,4 +1,5 @@
-// Game Main – Multiple Levels + Goal/Levelwechsel (level1 -> level2 -> level1 ...)
+// Game Main – Save/Load (Progress & Einstellungen) mit localStorage
+// Speichert: freigeschaltete Level, zuletzt gespieltes Level, Optionen (Lautstaerke, Steuerung)
 
 (function () {
   'use strict';
@@ -19,6 +20,7 @@
   const HUD   = window.Game.UI.HUD;
   const FX    = window.Game.Effects.Particles;
   const Menu  = window.Game.UI.Menu;
+  const Save  = window.Game.State.Save;
 
   const canvas = document.getElementById('game');
   const PX_PER_M = 40;
@@ -40,7 +42,7 @@
     camera: Camera.create(),
     hud: HUD.create(),
     fx: FX.create(),
-    menu: (window.Game.UI.Menu && window.Game.UI.Menu.create()) || { open() {}, update() {}, draw() {} },
+    menu: Menu.create(),
 
     coins: [],
     enemies: [],
@@ -52,7 +54,9 @@
     invulnTill: 0,
     groundUnder: null,
 
-    gameState: 'menu' // 'menu' | 'playing' | 'paused' | 'options'
+    gameState: 'menu', // 'menu' | 'playing' | 'paused' | 'options'
+
+    save: Save.load() // {version, unlocked, lastLevel, options}
   };
 
   // ---------- Helpers ----------
@@ -87,9 +91,7 @@
     });
   }
   function rebuildMovingPlatforms() { state.mplats = (state.level.movingPlatforms || []).map(mp => MPlat.create(mp)); }
-  function rebuildGoal() {
-    state.goal = state.level.goal ? Goal.create(state.level.goal) : null;
-  }
+  function rebuildGoal() { state.goal = state.level.goal ? Goal.create(state.level.goal) : null; }
 
   function resetToLoadedLevel() {
     const b = state.level.bounds;
@@ -102,7 +104,7 @@
   }
 
   function restartLevelKeepingData() {
-    // Restart des gleichen Levels
+    // Restart des gleichen Levels (HUD resettet, Fortschritt bleibt gespeichert)
     loadLevel(state.currentLevel, true);
     state.hud.setLives(3);
     state.hud.setCoins(0);
@@ -114,12 +116,27 @@
     return LEVEL_SEQUENCE[n];
   }
 
+  function persist() {
+    // Schreibe aktuellen Stand in localStorage
+    Save.save({
+      version: 1,
+      unlocked: state.save.unlocked,
+      lastLevel: state.currentLevel,
+      options: state.save.options
+    });
+  }
+
   async function loadLevel(name, keepHUD = false) {
     state.level.loaded = false;
     try {
       const level = await LevelLoader.load(name);
       state.level = { ...level, loaded: true };
       state.currentLevel = name;
+
+      // Remember last played
+      state.save.lastLevel = name;
+      persist();
+
       resetToLoadedLevel();
       if (!keepHUD) {
         state.hud.setLives(3);
@@ -133,8 +150,7 @@
       state.camera.clearBounds();
       Tiles.buildFromLevel(state.level, PX_PER_M);
       rebuildCoins(); rebuildEnemies(); rebuildCheckpoints(); rebuildMovingPlatforms(); rebuildGoal();
-      setCheckpointToSpawn();
-      respawnToCheckpoint();
+      setCheckpointToSpawn(); respawnToCheckpoint();
     }
   }
 
@@ -143,23 +159,35 @@
     state.camera.resize(w, h, PX_PER_M);
   }
 
+  function applyLoadedOptions() {
+    // Aktuell: Optionen werden nur gespeichert/angezeigt.
+    // Lautstaerke kann spaeter auf Audio gemappt werden; Steuerung koennte in Input einfliessen.
+    state.menu.setOptions(state.save.options);
+  }
+
   function setGameState(s) {
     state.gameState = s;
-    if (state.menu && state.menu.open) {
-      if (s === 'menu')     state.menu.open('start');
-      if (s === 'paused')   state.menu.open('pause');
-      if (s === 'options')  state.menu.open('options');
-    }
+    if (s === 'menu')     state.menu.open('start');
+    if (s === 'paused')   state.menu.open('pause');
+    if (s === 'options')  state.menu.open('options');
   }
 
   function initMenuCallbacks() {
-    if (!state.menu.setCallbacks) return;
     state.menu.setCallbacks({
-      onStart: () => { loadLevel('level1'); setGameState('playing'); },
+      onStart: () => {
+        // Starte beim zuletzt gespielten Level, falls vorhanden und freigeschaltet
+        const startLevel = state.save.unlocked[state.save.lastLevel] ? state.save.lastLevel : 'level1';
+        loadLevel(startLevel);
+        setGameState('playing');
+      },
       onResume: () => setGameState('playing'),
       onReset: () => { restartLevelKeepingData(); setGameState('playing'); },
       onOpenOptions: () => setGameState('options'),
-      onBackToStart: () => { setGameState('menu'); }
+      onBackToStart: () => { setGameState('menu'); },
+      onOptionsChanged: (opts) => {
+        state.save.options = Object.assign({}, state.save.options, opts);
+        persist();
+      }
     });
   }
 
@@ -168,15 +196,21 @@
     Input.init();
     state.camera.setOffsets(0, 2);
 
+    // HUD Start
     state.hud.setLives(3);
     state.hud.setCoins(0);
     state.hud.resetTimer();
 
+    // Save laden & anwenden
+    state.save = Save.load();
+    applyLoadedOptions();
+
     initMenuCallbacks();
     setGameState('menu');
 
-    // Level 1 initial laden (im Startmenü sichtbar)
-    loadLevel('level1');
+    // lade im Hintergrund das zuletzt gespielte Level (sichtbar als Hintergrund)
+    const initial = state.save.unlocked[state.save.lastLevel] ? state.save.lastLevel : 'level1';
+    loadLevel(initial);
 
     state._inited = true;
   }
@@ -215,7 +249,7 @@
     if (!state.level.loaded) return;
 
     if (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options') {
-      if (state.menu.update) state.menu.update(Input);
+      state.menu.update(Input);
       return;
     }
 
@@ -223,16 +257,13 @@
     const wasGround = state.player.onGround;
     const prevVy = state.player.vy;
 
-    // Bewegliche Plattformen
     for (const m of state.mplats) m.update(dt);
 
-    // Spieler
     state.player.update(
       state.time, dt, Input, combinedPlatformRects(),
       { gravity: state.gravity, frictionGround: state.frictionGround, frictionAir: state.frictionAir }
     );
 
-    // Jump/Land FX
     if (wasGround && !state.player.onGround && prevVy < 0) {
       const dir = (Input.pressed('ArrowRight') || Input.pressed('KeyD')) ? 1
                 : (Input.pressed('ArrowLeft')  || Input.pressed('KeyA')) ? -1 : 0;
@@ -242,16 +273,13 @@
       state.fx.emitLanding(state.player.x + state.player.w * 0.5, state.player.y + state.player.h);
     }
 
-    // Coins
     for (const c of state.coins) c.tryCollect(state.player, () => {
       state.hud.addCoins(1);
       state.fx.emitSparkles(c.x, c.y);
     });
 
-    // Gegner
     for (const e of state.enemies) { e.update(dt); e.checkHit(state.player, onPlayerHit); }
 
-    // Checkpoints
     for (const cp of state.checkpoints) {
       const activated = cp.tryActivate(state.player, (which) => {
         for (const other of state.checkpoints) if (other !== which) other.active = false;
@@ -260,15 +288,17 @@
       if (activated) break;
     }
 
-    // Goal (Levelwechsel)
     if (state.goal) {
       state.goal.check(state.player, () => {
+        // Beim Ziel: naechstes Level freischalten und laden
         const next = nextLevelName();
+        state.save.unlocked[next] = true;
+        Save.unlock(next);
+        persist();
         loadLevel(next);
       });
     }
 
-    // Mitnahme bewegliche Plattform
     let ground = null;
     if (state.player.onGround) ground = findMovingGroundUnderPlayer();
     if (ground) {
@@ -282,7 +312,6 @@
       state.groundUnder = null;
     }
 
-    // Kamera, HUD, FX
     const px = state.player.x + state.player.w * 0.5;
     const py = state.player.y + state.player.h * 0.5;
     state.camera.follow(px, py, dt, 8);
@@ -297,6 +326,7 @@
       respawnToCheckpoint();
       state.hud.resetTimer();
       state.hud.setLives(3);
+      persist();
     }
   }
 
@@ -335,10 +365,8 @@
 
     if (state.goal) state.goal.draw(ctx, worldToScreen, PX_PER_M, state.time);
 
-    // Spieler (inkl. Hit-Feedback)
     if (state.time < state.invulnTill) {
-      ctx.save();
-      ctx.globalAlpha = 0.6 + Math.sin(state.time * 30) * 0.2;
+      ctx.save(); ctx.globalAlpha = 0.6 + Math.sin(state.time * 30) * 0.2;
       state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
       ctx.restore();
     } else {
@@ -348,7 +376,7 @@
     state.fx.draw(ctx, worldToScreen, PX_PER_M);
     state.hud.draw(ctx);
 
-    if (state.menu && (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options')) {
+    if (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options') {
       state.menu.draw(ctx, state.viewport.w, state.viewport.h);
     }
 
@@ -356,7 +384,9 @@
     ctx.fillStyle = 'rgba(255,255,255,.6)';
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText(`lvl=${state.currentLevel} lives=${state.hud.lives} coins=${state.hud.coins}`, state.viewport.w - 10, state.viewport.h - 10);
+    const unlockedList = Object.keys(state.save.unlocked).filter(k => state.save.unlocked[k]).sort().join(',');
+    ctx.fillText(`lvl=${state.currentLevel} unlocked=[${unlockedList}] vol=${(state.save.options.volume*100|0)}%`,
+      state.viewport.w - 10, state.viewport.h - 10);
   }
 
   const engine = new Engine(canvas, { onUpdate, onRender, onResize });
