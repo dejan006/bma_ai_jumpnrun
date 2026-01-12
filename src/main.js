@@ -1,4 +1,4 @@
-// Game Main – Checkpoints + Lives-System (Restart bei 0 Lives).
+// Game Main – Bewegliche Plattformen mit Player-Mitnahme (kein Durchrutschen).
 
 (function () {
   'use strict';
@@ -9,6 +9,7 @@
   const Coin    = window.Game.Entities.Coin;
   const Enemy   = window.Game.Entities.PatrolEnemy;
   const Cp      = window.Game.Entities.Checkpoint;
+  const MPlat   = window.Game.Entities.MovingPlatform;
   const Camera  = window.Game.Camera;
   const LevelLoader = window.Game.World.LevelLoader;
 
@@ -27,7 +28,7 @@
     frictionGround: 18,
     frictionAir: 2,
 
-    level: { loaded: false, name: '', platforms: [], spawn: { x:0, y:0 }, bounds: null, coins: [], enemies: [], checkpoints: [] },
+    level: { loaded: false, name: '', platforms: [], tiles: null, coins: [], enemies: [], checkpoints: [], movingPlatforms: [], bounds: null },
 
     player: Player.create(0, 0),
     camera: Camera.create(),
@@ -36,79 +37,67 @@
     coins: [],
     enemies: [],
     checkpoints: [],
+    mplats: [],
 
-    checkpoint: { x: 0, y: 0 }, // aktueller Respawn
-    invulnTill: 0
+    checkpoint: { x: 0, y: 0 },
+    invulnTill: 0,
+
+    groundUnder: null // Referenz auf bewegliche Plattform, falls darauf stehend
   };
 
   // ---------- Helpers ----------
-  function setCheckpoint(x, y) {
-    state.checkpoint.x = x;
-    state.checkpoint.y = y;
-  }
-
-  function setCheckpointToSpawn() {
-    setCheckpoint(state.level.spawn.x, state.level.spawn.y);
-  }
+  function setCheckpoint(x, y) { state.checkpoint.x = x; state.checkpoint.y = y; }
+  function setCheckpointToSpawn() { setCheckpoint(state.level.spawn.x, state.level.spawn.y); }
 
   function respawnToCheckpoint() {
     state.player.reset(state.checkpoint.x, state.checkpoint.y);
     const cx = state.player.x + state.player.w * 0.5;
     const cy = state.player.y + state.player.h * 0.5;
     state.camera.snapTo(cx, cy);
-    state.invulnTill = state.time + 1.0; // kurze Nach-Treffer-Unverwundbarkeit
+    state.invulnTill = state.time + 1.0;
+    state.groundUnder = null;
   }
 
   function resetAllCoinsVisible() { for (const c of state.coins) c.collected = false; }
+
+  function onPlayerHit() {
+    if (state.time < state.invulnTill) return;
+    state.hud.addLives(-1);
+    if (state.hud.lives <= 0) { restartLevelKeepingData(); return; }
+    respawnToCheckpoint();
+  }
 
   function rebuildCoins()   { state.coins   = (state.level.coins   || []).map(c => Coin.create(c.x, c.y, 0.35)); }
   function rebuildEnemies() { state.enemies = (state.level.enemies || []).map(e => Enemy.create(e)); }
   function rebuildCheckpoints() {
     state.checkpoints = (state.level.checkpoints || []).map(cp => {
       const inst = Cp.create(cp.x, cp.y);
-      // Spawn-Checkpoint soll direkt aktiv sein
-      if (Math.abs(cp.x - state.level.spawn.x) < 0.01 && Math.abs(cp.y - state.level.spawn.y) < 0.01) {
-        inst.active = true;
-      }
+      if (Math.abs(cp.x - state.level.spawn.x) < 0.01 && Math.abs(cp.y - state.level.spawn.y) < 0.01) inst.active = true;
       return inst;
     });
+  }
+  function rebuildMovingPlatforms() {
+    state.mplats = (state.level.movingPlatforms || []).map(mp => MPlat.create(mp));
   }
 
   function resetToLoadedLevel() {
     const b = state.level.bounds;
     state.camera.setBounds(b.minX, b.minY, b.maxX, b.maxY);
     Tiles.buildFromLevel(state.level, PX_PER_M);
-    rebuildCoins();
-    rebuildEnemies();
-    rebuildCheckpoints();
+    rebuildCoins(); rebuildEnemies(); rebuildCheckpoints(); rebuildMovingPlatforms();
     setCheckpointToSpawn();
     respawnToCheckpoint();
   }
 
   function restartLevelKeepingData() {
-    // kompletter Level-Reset (Coins sichtbar, Gegner zurück, Checkpoints zurück)
     resetToLoadedLevel();
-    // HUD zurück
     state.hud.setLives(3);
     state.hud.setCoins(0);
     state.hud.resetTimer();
   }
 
-  function onPlayerHit() {
-    if (state.time < state.invulnTill) return; // noch unverwundbar
-    state.hud.addLives(-1);
-    if (state.hud.lives <= 0) {
-      // Level neu starten
-      restartLevelKeepingData();
-      return;
-    }
-    respawnToCheckpoint();
-  }
-
   function onResize(w, h, dpr) {
-    state.viewport.w = w;
-    state.viewport.h = h;
-    state.viewport.dpr = dpr;
+    state.viewport.w = w; state.viewport.h = h; state.viewport.dpr = dpr;
     state.camera.resize(w, h, PX_PER_M);
   }
 
@@ -117,21 +106,20 @@
     Input.init();
     state.camera.setOffsets(0, 2);
 
-    // HUD Start
     state.hud.setLives(3);
     state.hud.setCoins(0);
     state.hud.resetTimer();
 
-    // Level laden
     LevelLoader.load('level1').then(level => {
       state.level = { ...level, loaded: true };
       resetToLoadedLevel();
     }).catch(err => {
       console.error(err);
-      state.level = { loaded: true, name: 'error', platforms: [], spawn: {x:0,y:0}, bounds: {minX:-50,minY:-20,maxX:50,maxY:50}, coins: [], enemies: [], checkpoints: [] };
+      state.level = { loaded: true, name: 'error', platforms: [], spawn: {x:0,y:0}, bounds: {minX:-50,minY:-20,maxX:50,maxY:50},
+        tiles:null, coins:[], enemies:[], checkpoints:[], movingPlatforms:[] };
       state.camera.clearBounds();
       Tiles.buildFromLevel(state.level, PX_PER_M);
-      rebuildCoins(); rebuildEnemies(); rebuildCheckpoints();
+      rebuildCoins(); rebuildEnemies(); rebuildCheckpoints(); rebuildMovingPlatforms();
       setCheckpointToSpawn();
       respawnToCheckpoint();
     });
@@ -139,43 +127,92 @@
     state._inited = true;
   }
 
+  function combinedPlatformRects() {
+    // statische + bewegliche als AABBs
+    const list = state.level.platforms.slice();
+    for (const m of state.mplats) list.push(m.aabb());
+    return list;
+  }
+
+  function findMovingGroundUnderPlayer() {
+    // Epsilon knapp unter Spielerfuss
+    const eps = 0.02;
+    const px = state.player.x, py = state.player.y, pw = state.player.w, ph = state.player.h;
+    for (const m of state.mplats) {
+      const a = m.aabb();
+      const feetOnTop =
+        (py + ph) <= (a.y + eps) && (py + ph) >= (a.y - eps) &&          // Fuss liegt auf Top-Kante
+        (px + pw) > a.x && px < (a.x + a.w);                              // horizontale Überdeckung
+      if (feetOnTop) return m;
+    }
+    return null;
+  }
+
   function onUpdate(dt) {
     state.time += dt;
     initOnce();
     if (!state.level.loaded) return;
 
-    // Spieler
+    // 1) Bewegliche Plattformen updaten (merken prevX/prevY intern)
+    for (const m of state.mplats) m.update(dt);
+
+    // 2) Spieler updaten gegen kombiniertes Kollisionsset
     state.player.update(
-      state.time, dt, Input, state.level.platforms,
+      state.time, dt, Input, combinedPlatformRects(),
       { gravity: state.gravity, frictionGround: state.frictionGround, frictionAir: state.frictionAir }
     );
 
-    // Coins
+    // 3) Coins einsammeln
     for (const c of state.coins) c.tryCollect(state.player, () => state.hud.addCoins(1));
 
-    // Enemies
+    // 4) Gegner bewegen + Schaden
     for (const e of state.enemies) { e.update(dt); e.checkHit(state.player, onPlayerHit); }
 
-    // Checkpoints aktivieren
+    // 5) Checkpoints aktivieren
     for (const cp of state.checkpoints) {
       const activated = cp.tryActivate(state.player, (which) => {
-        // Nur einen als "aktiv" markieren, andere deaktivieren
         for (const other of state.checkpoints) if (other !== which) other.active = false;
         setCheckpoint(which.respawnX, which.respawnY);
       });
-      if (activated) break; // pro Frame nur einen neu aktivieren
+      if (activated) break;
     }
 
-    // Kamera
+    // 6) Player-Mitnahme durch bewegliche Plattformen (kein Durchrutschen)
+    let ground = null;
+    if (state.player.onGround) {
+      ground = findMovingGroundUnderPlayer();
+    }
+    if (ground) {
+      const dx = ground.x - ground.prevX;
+      const dy = ground.y - ground.prevY;
+      // Plattformverschiebung auf den Spieler anwenden
+      state.player.x += dx;
+      state.player.y += dy;
+      // Sicherheitskorrektur: falls durch Rundung minimal einsinkt, wieder auf Top setzen
+      const a = ground.aabb();
+      if (state.player.y + state.player.h > a.y) {
+        state.player.y = a.y - state.player.h;
+      }
+      state.groundUnder = ground;
+    } else {
+      state.groundUnder = null;
+    }
+
+    // 7) Kamera, HUD, Reset
     const px = state.player.x + state.player.w * 0.5;
     const py = state.player.y + state.player.h * 0.5;
     state.camera.follow(px, py, dt, 8);
 
-    // HUD
     state.hud.update(dt);
 
-    // Manuelles Reset (kompletter Neustart)
-    if (Input.pressed('KeyR')) restartLevelKeepingData();
+    if (Input.pressed('KeyR')) {
+      resetAllCoinsVisible();
+      state.hud.setCoins(0);
+      setCheckpointToSpawn();
+      respawnToCheckpoint();
+      state.hud.resetTimer();
+      state.hud.setLives(3);
+    }
   }
 
   function worldToScreen(x, y) {
@@ -205,8 +242,13 @@
     // Tiles
     Tiles.draw(ctx, state.viewport.w, state.viewport.h, state.camera, PX_PER_M);
 
-    // Plattformkanten
+    // Statische Plattformkanten
     for (const p of state.level.platforms) drawRect(ctx, p.x, p.y, p.w, p.h, 'rgba(17,20,28,0.65)');
+
+    // Bewegliche Plattformen
+    for (const m of state.mplats) {
+      m.draw(ctx, worldToScreen, PX_PER_M);
+    }
 
     // Coins
     for (const c of state.coins) c.draw(ctx, worldToScreen, PX_PER_M, state.time);
@@ -215,7 +257,8 @@
     for (const e of state.enemies) e.draw(ctx, worldToScreen, PX_PER_M, state.time);
 
     // Checkpoints
-    for (const cp of state.checkpoints) cp.draw(ctx, worldToScreen, PX_PER_M, state.time,
+    for (const cp of state.checkpoints) cp.draw(
+      ctx, worldToScreen, PX_PER_M, state.time,
       Math.abs(cp.respawnX - state.checkpoint.x) < 0.01 && Math.abs(cp.respawnY - state.checkpoint.y) < 0.01
     );
 
@@ -237,7 +280,7 @@
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
     ctx.fillText(
-      `lives=${state.hud.lives} cp=(${state.checkpoint.x.toFixed(1)},${state.checkpoint.y.toFixed(1)})`,
+      `lives=${state.hud.lives} coins=${state.hud.coins}`,
       state.viewport.w - 10, state.viewport.h - 10
     );
   }
