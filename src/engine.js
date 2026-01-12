@@ -1,102 +1,120 @@
-// Game.Engine – Fixed timestep + interpolation, low-GC main loop, resize handling.
-// API:
-//   const engine = new Game.Engine.Engine(canvas, {
-//     onUpdate(dt),          // fixed step; dt in seconds
-//     onRender(ctx, alpha),  // render with interpolation alpha in [0..1]
-//     onResize(w, h, dpr)    // optional; called on start + when canvas size changes
-//   });
-//   engine.start(); engine.stop();
+// Game.Engine + einfache 2D-Physik (AABB) mit separater Achsenauflösung.
+// - Fixed-Timestep Loop wie in Prompt 1
+// - Gravitation
+// - Horizontale und vertikale Sweeps gegen rechteckige Plattformen
+// - Boden-Erkennung (landed)
+// Einheiten: "Meter" (abstrakt). Rendering skaliert in main.js.
 
 window.Game = window.Game || {};
 window.Game.Engine = (function () {
   'use strict';
 
-  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+  const DPR_MAX = 2;
+  const FIXED_DT = 1 / 60;
+  const MAX_FRAME = 0.25;
 
-  function Engine(canvas, callbacks, options) {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
-    this.cb = callbacks || {};
-    this.opts = Object.assign({
-      step: 1 / 120,          // physics step (s)
-      maxAccum: 0.25,         // clamp to avoid spiral of death
-      autoStart: false
-    }, options || {});
-    this._raf = 0;
-    this._running = false;
-    this._accum = 0;
-    this._prevStamp = 0;
+  class Engine {
+    /**
+     * @param {HTMLCanvasElement} canvas
+     * @param {{onUpdate:function, onRender:function, onResize:function}} opts
+     */
+    constructor(canvas, opts) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext('2d');
+      this.onUpdate = opts.onUpdate;
+      this.onRender = opts.onRender;
+      this.onResize = opts.onResize || (()=>{});
 
-    // cached pixel ratio + size
-    this._dpr = 1; this._vw = 0; this._vh = 0;
+      this._acc = 0;
+      this._last = performance.now() / 1000;
 
-    // bind
-    this._tick = this._tick.bind(this);
+      this._resize = this._resize.bind(this);
+      this._loop = this._loop.bind(this);
 
-    this._resizeObserver = new ResizeObserver(() => this._applySize());
-    this._resizeObserver.observe(this.canvas);
+      window.addEventListener('resize', this._resize);
+      this._resize();
+    }
 
-    // initial apply size & notify
-    this._applySize();
+    _resize() {
+      const dpr = Math.min(DPR_MAX, Math.max(1, window.devicePixelRatio || 1));
+      const w = Math.floor(window.innerWidth);
+      const h = Math.floor(window.innerHeight);
+      this.canvas.width = Math.floor(w * dpr);
+      this.canvas.height = Math.floor(h * dpr);
+      this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      this.onResize(w, h, dpr);
+    }
 
-    if (this.opts.autoStart) this.start();
+    start() {
+      this._last = performance.now() / 1000;
+      requestAnimationFrame(this._loop);
+    }
+
+    _loop() {
+      const now = performance.now() / 1000;
+      let frame = now - this._last;
+      this._last = now;
+
+      frame = Math.min(frame, MAX_FRAME);
+      this._acc += frame;
+
+      while (this._acc >= FIXED_DT) {
+        this.onUpdate(FIXED_DT);
+        this._acc -= FIXED_DT;
+      }
+      this.onRender(this.ctx);
+      requestAnimationFrame(this._loop);
+    }
   }
 
-  Engine.prototype._applySize = function () {
-    const dpr = Math.max(1, Math.round(window.devicePixelRatio || 1));
-    const rect = this.canvas.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(rect.width));
-    const h = Math.max(1, Math.floor(rect.height));
+  // -------------------- Physik (AABB) --------------------
 
-    if (w !== this._vw || h !== this._vh || dpr !== this._dpr) {
-      this._vw = w; this._vh = h; this._dpr = dpr;
-      this.canvas.width = Math.max(1, Math.floor(w * dpr));
-      this.canvas.height = Math.max(1, Math.floor(h * dpr));
-      this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      if (this.cb.onResize) this.cb.onResize(this._vw, this._vh, this._dpr);
+  /**
+   * Axis-Aligned Bounding Box Kollisionsprüfung.
+   */
+  function aabbOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+  }
+
+  /**
+   * Bewege einen Korpus (Rect) und kollidiere gegen Plattformen.
+   * Separater Sweep: erst X, dann Y. Liefert Info, ob gelandet wurde.
+   *
+   * @param {object} body {x,y,w,h,vx,vy}
+   * @param {number} dt
+   * @param {Array<{x,y,w,h}>} platforms
+   * @returns {{x:number,y:number,vx:number,vy:number,hitX:boolean,hitY:boolean,landed:boolean}}
+   */
+  function moveAndCollide(body, dt, platforms) {
+    let { x, y, w, h, vx, vy } = body;
+    let hitX = false, hitY = false, landed = false;
+
+    // Horizontal
+    x += vx * dt;
+    for (const p of platforms) {
+      if (aabbOverlap(x, y, w, h, p.x, p.y, p.w, p.h)) {
+        if (vx > 0) x = p.x - w;
+        else if (vx < 0) x = p.x + p.w;
+        vx = 0; hitX = true;
+      }
     }
-  };
 
-  Engine.prototype.start = function () {
-    if (this._running) return;
-    this._running = true;
-    this._accum = 0;
-    this._prevStamp = performance.now() / 1000;
-    this._raf = requestAnimationFrame(this._tick);
-  };
-
-  Engine.prototype.stop = function () {
-    if (!this._running) return;
-    cancelAnimationFrame(this._raf);
-    this._raf = 0;
-    this._running = false;
-  };
-
-  Engine.prototype._tick = function (tsMs) {
-    if (!this._running) return;
-    const now = tsMs / 1000;
-    let dt = now - this._prevStamp;
-    this._prevStamp = now;
-
-    // clamp & accumulate
-    dt = clamp(dt, 0, this.opts.maxAccum);
-    this._accum += dt;
-
-    const step = this.opts.step;
-    while (this._accum >= step) {
-      if (this.cb.onUpdate) this.cb.onUpdate(step);
-      this._accum -= step;
+    // Vertikal
+    y += vy * dt;
+    for (const p of platforms) {
+      if (aabbOverlap(x, y, w, h, p.x, p.y, p.w, p.h)) {
+        if (vy > 0) { // fallend (nach unten im Screen)
+          y = p.y - h;
+          landed = true;
+        } else if (vy < 0) {
+          y = p.y + p.h;
+        }
+        vy = 0; hitY = true;
+      }
     }
-    const alpha = clamp(this._accum / step, 0, 1);
 
-    // clear (single clear; caller draws everything)
-    // NOTE: caller can also clear; leaving here for convenience
-    // this.ctx.clearRect(0, 0, this._vw, this._vh);
+    return { x, y, vx, vy, hitX, hitY, landed };
+  }
 
-    if (this.cb.onRender) this.cb.onRender(this.ctx, alpha);
-
-    this._raf = requestAnimationFrame(this._tick);
-  };
-
-  return { Engine };
+  return { Engine, FIXED_DT, aabbOverlap, moveAndCollide };
 })();

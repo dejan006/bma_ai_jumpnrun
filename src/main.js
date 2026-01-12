@@ -1,7 +1,4 @@
-// Game Main – Performance Pass:
-// - Fixed timestep + interpolation (alpha)
-// - Draw-call/state-change minimierung
-// - GC-minimierung (Objekt-/Array-Reuse, keine Hot-Path-Allokationen)
+// Game Main – Barrierefreiheit & Optionen (Kontrast, Screen-Shake, Reduce Motion, Lautstärke-Persistenz)
 
 (function () {
   'use strict';
@@ -17,7 +14,7 @@
   const Camera  = window.Game.Camera;
   const LevelLoader = window.Game.World.LevelLoader;
 
-  const Back  = window.Game.Render.Tiles ? window.Game.Render.Background : window.Game.Render?.Background;
+  const Back  = window.Game.Render.Background;
   const Tiles = window.Game.Render.Tiles;
   const HUD   = window.Game.UI.HUD;
   const FX    = window.Game.Effects.Particles;
@@ -60,17 +57,12 @@
 
     gameState: 'menu', // 'menu' | 'playing' | 'paused' | 'options'
 
-    save: Save.load(),
+    save: Save.load(), // {version, unlocked, lastLevel, options}
 
-    // screen-shake (respektiert Optionen wie in Prompt 18)
-    shakeAmp: 0,
-    shakeDecay: 2.5
+    // Screen-Shake
+    shakeAmp: 0, // aktuelle Amplitude in px
+    shakeDecay: 2.5 // Abklingrate
   };
-
-  // ---- GC-freundliche temporäre Objekte / Arrays (einmalig anlegen, immer wiederverwenden)
-  const tmpScreen = { x: 0, y: 0 };
-  const tmpRects = []; // wiederverwendete Liste für combinedPlatformRects
-  const tmpCam = { x: 0, y: 0, prevX: 0, prevY: 0 };
 
   // ---------- Helpers ----------
   function setCheckpoint(x, y) { state.checkpoint.x = x; state.checkpoint.y = y; }
@@ -87,22 +79,10 @@
 
   function resetAllCoinsVisible() { for (const c of state.coins) c.collected = false; }
 
-  function triggerShake(px) {
-    if (!state.save.options?.screenShake || state.save.options?.reduceMotion) return;
-    state.shakeAmp = Math.max(state.shakeAmp, px || 4);
-  }
-  function updateShake(dt) {
-    if (state.shakeAmp > 0) state.shakeAmp = Math.max(0, state.shakeAmp - state.shakeDecay * dt);
-  }
-  function sampleShake() {
-    if (state.shakeAmp <= 0) return { x: 0, y: 0 };
-    return { x: (Math.random() - 0.5) * state.shakeAmp, y: (Math.random() - 0.5) * state.shakeAmp };
-  }
-
   function onPlayerHit() {
     if (state.time < state.invulnTill) return;
     state.hud.addLives(-1);
-    triggerShake(8);
+    triggerShake(8); // kräftiger Shake bei Schaden
     if (state.hud.lives <= 0) { restartLevelKeepingData(); return; }
     respawnToCheckpoint();
   }
@@ -214,8 +194,8 @@
   }
 
   function initTouchControls() {
-    if (!Touch || state.touch) return;
-    state.touch = Touch.create();
+    if (!window.Game.UI.TouchControls || state.touch) return;
+    state.touch = window.Game.UI.TouchControls.create();
     state.touch.setMapping(state.save.options.controls === 'arrows' ? 'arrows' : 'wasd');
   }
 
@@ -241,52 +221,55 @@
     state._inited = true;
   }
 
-  // ---- Physics helpers (no allocations) ----
-  function combinedPlatformRects(out) {
-    out.length = 0;
-    const base = state.level.platforms;
-    for (let i = 0; i < base.length; i++) out.push(base[i]);
-    const mp = state.mplats;
-    for (let i = 0; i < mp.length; i++) out.push(mp[i].aabb()); // aabb returns object, but it's internal object reused in mplat
-    return out;
+  function combinedPlatformRects() {
+    const list = state.level.platforms.slice();
+    for (const m of state.mplats) list.push(m.aabb());
+    return list;
   }
 
   function findMovingGroundUnderPlayer() {
     const eps = 0.02;
     const px = state.player.x, py = state.player.y, pw = state.player.w, ph = state.player.h;
-    for (let i = 0; i < state.mplats.length; i++) {
-      const a = state.mplats[i].aabb();
+    for (const m of state.mplats) {
+      const a = m.aabb();
       const feetOnTop =
         (py + ph) <= (a.y + eps) && (py + ph) >= (a.y - eps) &&
         (px + pw) > a.x && px < (a.x + a.w);
-      if (feetOnTop) return state.mplats[i];
+      if (feetOnTop) return m;
     }
     return null;
   }
 
-  // --- Interpolation support: wir merken prev-Positionen im Fixed-Step
-  function stashPrevPositions() {
-    // Player
-    state.player.prevX = state.player.x;
-    state.player.prevY = state.player.y;
-    // Camera
-    tmpCam.prevX = state.camera.x;
-    tmpCam.prevY = state.camera.y;
-    // Enemies
-    for (let i = 0; i < state.enemies.length; i++) {
-      const e = state.enemies[i];
-      e.prevX = e.x; e.prevY = e.y;
+  function handleGlobalToggles() {
+    const wantPause = Input.pressed('KeyP') || Input.pressed('Escape');
+    if (wantPause && state.level.loaded) {
+      if (state.gameState === 'playing') setGameState('paused');
+      else if (state.gameState === 'paused') setGameState('playing');
     }
-    // Moving platforms: handled internally (prevX/prevY in .update)
   }
 
-  function onFixedUpdate(dt) {
+  // --- Screen-Shake helpers ---
+  function triggerShake(px) {
+    if (!state.save.options.screenShake || state.save.options.reduceMotion) return;
+    state.shakeAmp = Math.max(state.shakeAmp, px || 4);
+  }
+  function updateShake(dt) {
+    if (state.shakeAmp <= 0) return;
+    state.shakeAmp = Math.max(0, state.shakeAmp - state.shakeDecay * dt);
+  }
+  function sampleShake() {
+    if (state.shakeAmp <= 0) return { x: 0, y: 0 };
+    const ax = (Math.random() - 0.5) * state.shakeAmp;
+    const ay = (Math.random() - 0.5) * state.shakeAmp;
+    return { x: ax, y: ay };
+  }
+
+  function onUpdate(dt) {
     state.time += dt;
     initOnce();
+    handleGlobalToggles();
     updateShake(dt);
     if (!state.level.loaded) return;
-
-    handleGlobalToggles();
 
     if (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options') {
       state.menu.update(Input);
@@ -294,27 +277,18 @@
     }
 
     // === PLAYING ===
-    stashPrevPositions();
-
     const wasGround = state.player.onGround;
     const prevVy = state.player.vy;
 
-    // Bewegliche Plattformen
-    for (let i = 0; i < state.mplats.length; i++) state.mplats[i].update(dt);
+    for (const m of state.mplats) m.update(dt);
 
-    // Spieler
     state.player.update(
-      state.time, dt, Input, combinedPlatformRects(tmpRects),
+      state.time, dt, Input, combinedPlatformRects(),
       { gravity: state.gravity, frictionGround: state.frictionGround, frictionAir: state.frictionAir }
     );
 
-    // Kamera folgen (prev wurde vor dem Follow gestasht, für Interp)
-    const px = state.player.x + state.player.w * 0.5;
-    const py = state.player.y + state.player.h * 0.5;
-    state.camera.follow(px, py, dt, 8);
-
-    // Jump/Land Effekte (optional reduziert)
-    if (!state.save.options?.reduceMotion) {
+    // Jump/Land Effekte – respektiere Reduce Motion
+    if (!state.save.options.reduceMotion) {
       if (wasGround && !state.player.onGround && prevVy < 0) {
         const dir = (Input.pressed('ArrowRight') || Input.pressed('KeyD')) ? 1
                   : (Input.pressed('ArrowLeft')  || Input.pressed('KeyA')) ? -1 : 0;
@@ -322,37 +296,25 @@
       }
       if (!wasGround && state.player.onGround) {
         state.fx.emitLanding(state.player.x + state.player.w * 0.5, state.player.y + state.player.h);
-        triggerShake(3);
+        triggerShake(3); // kleiner Shake bei Landung
       }
     }
 
-    // Coins
-    for (let i = 0; i < state.coins.length; i++) {
-      const c = state.coins[i];
-      c.tryCollect(state.player, () => {
-        state.hud.addCoins(1);
-        if (!state.save.options?.reduceMotion) state.fx.emitSparkles(c.x, c.y);
-      });
-    }
+    for (const c of state.coins) c.tryCollect(state.player, () => {
+      state.hud.addCoins(1);
+      if (!state.save.options.reduceMotion) state.fx.emitSparkles(c.x, c.y);
+    });
 
-    // Gegner
-    for (let i = 0; i < state.enemies.length; i++) {
-      const e = state.enemies[i];
-      e.update(dt);
-      e.checkHit(state.player, onPlayerHit);
-    }
+    for (const e of state.enemies) { e.update(dt); e.checkHit(state.player, onPlayerHit); }
 
-    // Checkpoints
-    for (let i = 0; i < state.checkpoints.length; i++) {
-      const cpInst = state.checkpoints[i];
-      const activated = cpInst.tryActivate(state.player, (which) => {
-        for (let j = 0; j < state.checkpoints.length; j++) if (state.checkpoints[j] !== which) state.checkpoints[j].active = false;
+    for (const cp of state.checkpoints) {
+      const activated = cp.tryActivate(state.player, (which) => {
+        for (const other of state.checkpoints) if (other !== which) other.active = false;
         setCheckpoint(which.respawnX, which.respawnY);
       });
       if (activated) break;
     }
 
-    // Goal (Levelwechsel)
     if (state.goal) {
       state.goal.check(state.player, () => {
         const next = nextLevelName();
@@ -363,7 +325,6 @@
       });
     }
 
-    // Mitnahme bewegliche Plattform
     let ground = null;
     if (state.player.onGround) ground = findMovingGroundUnderPlayer();
     if (ground) {
@@ -376,6 +337,10 @@
     } else {
       state.groundUnder = null;
     }
+
+    const px = state.player.x + state.player.w * 0.5;
+    const py = state.player.y + state.player.h * 0.5;
+    state.camera.follow(px, py, dt, 8);
 
     state.hud.update(dt);
     state.fx.update(dt);
@@ -391,52 +356,37 @@
     }
   }
 
-  function handleGlobalToggles() {
-    const wantPause = Input.pressed('KeyP') || Input.pressed('Escape');
-    if (wantPause && state.level.loaded) {
-      if (state.gameState === 'playing') setGameState('paused');
-      else if (state.gameState === 'paused') setGameState('playing');
-    }
+  function worldToScreen(x, y) {
+    const sx = Math.round((x - state.camera.x) * PX_PER_M + state.viewport.w / 2);
+    const sy = Math.round((y - state.camera.y) * PX_PER_M + state.viewport.h / 2);
+    return { x: sx, y: sy };
   }
 
-  // Interpoliertes world->screen Mapping (kein Objekt-Neualloc im Hot-Path)
-  function makeWorldToScreen(alpha) {
-    // Kamera-Interpolation (eigenes prev, da Camera selbst keine prevX/prevY hat)
-    const camX = state.camera.x, camY = state.camera.y;
-    tmpCam.x = tmpCam.prevX + (camX - tmpCam.prevX) * alpha;
-    tmpCam.y = tmpCam.prevY + (camY - tmpCam.prevY) * alpha;
-
-    const halfW = state.viewport.w * 0.5;
-    const halfH = state.viewport.h * 0.5;
-    const scale = PX_PER_M;
-
-    return function worldToScreen(x, y, px, py) {
-      // Wenn prev-Pos (px,py) übergeben wurde → interpoliere; sonst nutze (x,y) direkt
-      const wx = (px === undefined) ? x : (px + (x - px) * alpha);
-      const wy = (py === undefined) ? y : (py + (y - py) * alpha);
-      tmpScreen.x = Math.round((wx - tmpCam.x) * scale + halfW);
-      tmpScreen.y = Math.round((wy - tmpCam.y) * scale + halfH);
-      return tmpScreen; // ACHTUNG: shared object, nur "read-only" direkt verwenden
-    };
-  }
-
-  function drawRectInterp(ctx, worldToScreen, x, y, px, py, w, h, color) {
-    const s = worldToScreen(x, y, px, py);
+  function drawRect(ctx, x, y, w, h, color) {
+    const a = worldToScreen(x, y);
     ctx.fillStyle = color;
-    ctx.fillRect(s.x, s.y, Math.round(w * PX_PER_M), Math.round(h * PX_PER_M));
+    ctx.fillRect(a.x, a.y, Math.round(w * PX_PER_M), Math.round(h * PX_PER_M));
   }
 
-  function onRender(ctx, alpha) {
-    if (!state._inited) return;
+  // Kontrast-Overlays: Umrandungen für wichtige Objekte
+  function outlineRect(ctx, x, y, w, h, thick = 2) {
+    const a = worldToScreen(x, y);
+    ctx.lineWidth = thick;
+    ctx.strokeStyle = '#fff';
+    ctx.strokeRect(a.x + 0.5, a.y + 0.5, Math.round(w * PX_PER_M) - 1, Math.round(h * PX_PER_M) - 1);
+    ctx.strokeStyle = '#000';
+    ctx.strokeRect(a.x + 1.5, a.y + 1.5, Math.round(w * PX_PER_M) - 3, Math.round(h * PX_PER_M) - 3);
+  }
 
-    // Hintergrund zuerst, optional shake (wird schon in Back.draw animiert)
+  function onRender(ctx) {
+    // optionaler Screen-Shake-Offset nur für Welt (nicht HUD/Menü)
     const sh = sampleShake();
+
+    // Hintergrund
     ctx.save();
     ctx.translate(sh.x, sh.y);
     Back.draw(ctx, state.viewport.w, state.viewport.h, state.camera.x, state.camera.y, state.time);
-
-    const worldToScreen = makeWorldToScreen(alpha);
-
+    // Welt
     if (!state.level.loaded) {
       ctx.fillStyle = 'rgba(255,255,255,.85)';
       ctx.font = '16px system-ui, sans-serif';
@@ -446,88 +396,60 @@
       return;
     }
 
-    // Tiles (intern bereits gekachelt/culling)
     Tiles.draw(ctx, state.viewport.w, state.viewport.h, state.camera, PX_PER_M);
 
-    // Batch: statische Plattformkanten (eine Fill-Style-Setzung, viele fillRect)
-    ctx.fillStyle = 'rgba(17,20,28,0.65)';
-    for (let i = 0; i < state.level.platforms.length; i++) {
-      const p = state.level.platforms[i];
-      const s = worldToScreen(p.x, p.y); // keine Interp notwendig (statisch)
-      ctx.fillRect(s.x, s.y, Math.round(p.w * PX_PER_M), Math.round(p.h * PX_PER_M));
-    }
-
-    // Bewegliche Plattformen (mit Interp aus prevX/prevY)
-    for (let i = 0; i < state.mplats.length; i++) {
-      const m = state.mplats[i];
-      // nutze draw, aber liefere worldToScreen, das prev als optionale Parameter nutzen kann
-      const aabb = m.aabb(); // shared object
-      const s = worldToScreen(aabb.x, aabb.y, m.prevX, m.prevY);
-      // draw ohne neue Pfade: direkt intern zeichnen
-      const W = Math.round(aabb.w * PX_PER_M);
-      const H = Math.round(aabb.h * PX_PER_M);
-      ctx.fillStyle = '#6b7280';
-      ctx.fillRect(s.x, s.y, W, H);
-      ctx.fillStyle = '#d1d5db';
-      ctx.fillRect(s.x, s.y, W, Math.max(2, Math.floor(H * 0.18)));
-    }
-
-    // Coins (statisch animiert über time → keine Interp nötig)
-    for (let i = 0; i < state.coins.length; i++) {
-      state.coins[i].draw(ctx, worldToScreen, PX_PER_M, state.time);
-    }
-
-    // Enemies (interp über prevX/prevY, wenn vorhanden; fallback = curr)
-    for (let i = 0; i < state.enemies.length; i++) {
-      const e = state.enemies[i];
-      // Wenn Enemy.draw(worldToScreen) intern sofort liest, können wir ihm eine wrapper-Funktion geben,
-      // die prev nutzt. Viele unserer Entities lesen worldToScreen(x,y) nur einmal → ok.
-      const w2s = (x, y) => worldToScreen(x, y, e.prevX, e.prevY);
-      e.draw(ctx, w2s, PX_PER_M, state.time);
-    }
-
-    // Checkpoints & Goal (statisch)
-    for (let i = 0; i < state.checkpoints.length; i++) {
-      const cp = state.checkpoints[i];
-      cp.draw(ctx, worldToScreen, PX_PER_M, state.time,
-        Math.abs(cp.respawnX - state.checkpoint.x) < 0.01 && Math.abs(cp.respawnY - state.checkpoint.y) < 0.01
-      );
-    }
+    for (const p of state.level.platforms) drawRect(ctx, p.x, p.y, p.w, p.h, 'rgba(17,20,28,0.65)');
+    for (const m of state.mplats) m.draw(ctx, worldToScreen, PX_PER_M);
+    for (const c of state.coins) c.draw(ctx, worldToScreen, PX_PER_M, state.time);
+    for (const e of state.enemies) e.draw(ctx, worldToScreen, PX_PER_M, state.time);
+    for (const cp of state.checkpoints) cp.draw(ctx, worldToScreen, PX_PER_M, state.time,
+      Math.abs(cp.respawnX - state.checkpoint.x) < 0.01 && Math.abs(cp.respawnY - state.checkpoint.y) < 0.01
+    );
     if (state.goal) state.goal.draw(ctx, worldToScreen, PX_PER_M, state.time);
 
-    // Spieler (mit Interp prevX/prevY)
-    const w2sPlayer = (x, y) => worldToScreen(x, y, state.player.prevX, state.player.prevY);
+    // Spieler
     if (state.time < state.invulnTill) {
-      ctx.save();
-      ctx.globalAlpha = 0.6 + Math.sin(state.time * 30) * 0.2;
-      state.player.draw(ctx, state.viewport, PX_PER_M, w2sPlayer);
+      ctx.save(); ctx.globalAlpha = 0.6 + Math.sin(state.time * 30) * 0.2;
+      state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
       ctx.restore();
     } else {
-      state.player.draw(ctx, state.viewport, PX_PER_M, w2sPlayer);
+      state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
     }
 
-    // Partikel (nur wenn Reduce Motion aus)
-    if (!state.save.options?.reduceMotion) {
+    // High-Contrast-Umrandungen
+    if (state.save.options.highContrast) {
+      for (const p of state.level.platforms) outlineRect(ctx, p.x, p.y, p.w, p.h, 2);
+      for (const m of state.mplats) outlineRect(ctx, m.x, m.y, m.w, m.h, 2);
+      for (const e of state.enemies) outlineRect(ctx, e.x, e.y, e.w, e.h, 2);
+      outlineRect(ctx, state.player.x, state.player.y, state.player.w, state.player.h, 2);
+      if (state.goal) outlineRect(ctx, state.goal.x, state.goal.y, state.goal.w, state.goal.h, 2);
+    }
+
+    // Partikel
+    if (!state.save.options.reduceMotion) {
       state.fx.draw(ctx, worldToScreen, PX_PER_M);
     }
+    ctx.restore(); // Ende Welt inkl. Shake
 
-    ctx.restore(); // Ende Welt (inkl. evtl. Shake)
-
-    // HUD (keine Interp, keine Shake)
+    // HUD
     state.hud.draw(ctx);
 
-    // Menüs
+    // Menü-Overlay
     if (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options') {
       state.menu.draw(ctx, state.viewport.w, state.viewport.h);
     }
 
-    // Debug mini (keine neuen Strings im Hot-Path – akzeptieren wir minimal)
+    // Debug mini
     ctx.fillStyle = 'rgba(255,255,255,.6)';
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
     const unlockedList = Object.keys(state.save.unlocked).filter(k => state.save.unlocked[k]).sort().join(',');
-    ctx.fillText(`lvl=${state.currentLevel} unlocked=[${unlockedList}]`, state.viewport.w - 10, state.viewport.h - 10);
+    ctx.fillText(
+      `lvl=${state.currentLevel} unlocked=[${unlockedList}] HC=${state.save.options.highContrast?'1':'0'} SM=${state.save.options.screenShake?'1':'0'} RM=${state.save.options.reduceMotion?'1':'0'}`,
+      state.viewport.w - 10, state.viewport.h - 10
+    );
   }
 
-  const engine = new Engine(canvas, { onUpdate: onFixedUpdate, onRender, onResize }, { step: 1/120, maxAccum: 0.25, autoStart: true });
+  const engine = new Engine(canvas, { onUpdate, onRender, onResize });
+  engine.start();
 })();
