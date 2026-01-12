@@ -1,4 +1,4 @@
-// Game Main – rendert Parallax-Hintergrund + Tiles + Plattformen + Spieler.
+// Game Main – HUD integriert (Lives/Coins/Timer) und aktualisiert sich im Spiel.
 
 (function () {
   'use strict';
@@ -11,6 +11,7 @@
 
   const Back = window.Game.Render.Background;
   const Tiles = window.Game.Render.Tiles;
+  const HUD = window.Game.UI.HUD;
 
   const canvas = document.getElementById('game');
   const PX_PER_M = 40;
@@ -24,8 +25,10 @@
     frictionAir: 2,
 
     level: { loaded: false, name: '', platforms: [], spawn: { x:0, y:0 }, bounds: null },
+
     player: Player.create(0, 0),
-    camera: Camera.create()
+    camera: Camera.create(),
+    hud: HUD.create()
   };
 
   // ---------- Helpers ----------
@@ -34,6 +37,8 @@
     const cx = state.player.x + state.player.w * 0.5;
     const cy = state.player.y + state.player.h * 0.5;
     state.camera.snapTo(cx, cy);
+    // Beispiel: Timer beim Respawn zuruecksetzen (kannst du spaeter aendern)
+    state.hud.resetTimer();
   }
 
   function onResize(w, h, dpr) {
@@ -48,15 +53,17 @@
     Input.init();
     state.camera.setOffsets(0, 2);
 
+    // HUD Startwerte (kannst du spaeter via Events anpassen)
+    state.hud.setLives(3);
+    state.hud.setCoins(0);
+    state.hud.resetTimer();
+
     // Level laden (asynchron)
     LevelLoader.load('level1').then(level => {
       state.level = { ...level, loaded: true };
-      // Bounds -> Kamera
       const b = state.level.bounds;
       state.camera.setBounds(b.minX, b.minY, b.maxX, b.maxY);
-      // Tiles vorbereiten
       Tiles.buildFromLevel(state.level, PX_PER_M);
-      // Spawn
       resetPlayerToSpawn();
     }).catch(err => {
       console.error(err);
@@ -75,7 +82,7 @@
 
     if (!state.level.loaded) return;
 
-    // Spieler-Update
+    // Spieler
     state.player.update(
       state.time,
       dt,
@@ -84,10 +91,13 @@
       { gravity: state.gravity, frictionGround: state.frictionGround, frictionAir: state.frictionAir }
     );
 
-    // Kamera folgt Spieler
+    // Kamera
     const px = state.player.x + state.player.w * 0.5;
     const py = state.player.y + state.player.h * 0.5;
     state.camera.follow(px, py, dt, 8);
+
+    // HUD-Zeit laeuft
+    state.hud.update(dt);
 
     // Reset
     if (Input.pressed('KeyR')) resetPlayerToSpawn();
@@ -106,7 +116,7 @@
   }
 
   function onRender(ctx) {
-    // Parallax-Hintergrund
+    // Hintergrund
     Back.draw(ctx, state.viewport.w, state.viewport.h, state.camera.x, state.camera.y, state.time);
 
     if (!state.level.loaded) {
@@ -117,10 +127,10 @@
       return;
     }
 
-    // Tiles (unterhalb der Plattformkanten, nur Optik)
+    // Tiles
     Tiles.draw(ctx, state.viewport.w, state.viewport.h, state.camera, PX_PER_M);
 
-    // (Optional) Plattformen als Kontur darueber, damit die Kante klar bleibt
+    // Plattform-Kanten dezent
     for (const p of state.level.platforms) {
       drawRect(ctx, p.x, p.y, p.w, p.h, 'rgba(17,20,28,0.65)');
     }
@@ -128,7 +138,10 @@
     // Spieler
     state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
 
-    // Debug mini
+    // HUD
+    state.hud.draw(ctx);
+
+    // Debug mini (unten rechts)
     ctx.fillStyle = 'rgba(255,255,255,.6)';
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
