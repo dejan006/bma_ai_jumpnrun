@@ -1,5 +1,5 @@
 // Game.World.LevelLoader – lädt Level-JSON und berechnet Bounds.
-// Rueckgabe: { name, spawn:{x,y}, platforms:[...], tiles, coins:[{x,y}], bounds:{minX,minY,maxX,maxY} }
+// Rueckgabe: { name, spawn, platforms, tiles, coins, enemies, bounds }
 
 window.Game = window.Game || {};
 window.Game.World = window.Game.World || {};
@@ -15,8 +15,9 @@ window.Game.World.LevelLoader = (function () {
     const spawn = data.spawn || { x: 0, y: 0 };
     const tiles = data.tiles || null;
     const coins = Array.isArray(data.coins) ? data.coins : [];
+    const enemies = Array.isArray(data.enemies) ? data.enemies : [];
 
-    // Bounds aus Plattformen ableiten
+    // Bounds aus Plattformen
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const p of platforms) {
       if (p.x < minX) minX = p.x;
@@ -30,7 +31,7 @@ window.Game.World.LevelLoader = (function () {
     }
     const bounds = { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
 
-    return { name: data.name || name, spawn, platforms, tiles, coins, bounds };
+    return { name: data.name || name, spawn, platforms, tiles, coins, enemies, bounds };
   }
 
   return { load };
