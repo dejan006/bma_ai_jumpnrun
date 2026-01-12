@@ -1,4 +1,4 @@
-// Game Main – Bewegliche Plattformen mit Player-Mitnahme (kein Durchrutschen).
+// Game Main – Partikel: Staub (Sprung/Landung) & Sparkles (Coin) mit Pooling.
 
 (function () {
   'use strict';
@@ -16,6 +16,7 @@
   const Back  = window.Game.Render.Background;
   const Tiles = window.Game.Render.Tiles;
   const HUD   = window.Game.UI.HUD;
+  const FX    = window.Game.Effects.Particles;
 
   const canvas = document.getElementById('game');
   const PX_PER_M = 40;
@@ -33,6 +34,7 @@
     player: Player.create(0, 0),
     camera: Camera.create(),
     hud: HUD.create(),
+    fx: FX.create(),
 
     coins: [],
     enemies: [],
@@ -42,7 +44,7 @@
     checkpoint: { x: 0, y: 0 },
     invulnTill: 0,
 
-    groundUnder: null // Referenz auf bewegliche Plattform, falls darauf stehend
+    groundUnder: null // bewegliche Plattform unter dem Spieler (falls vorhanden)
   };
 
   // ---------- Helpers ----------
@@ -87,13 +89,13 @@
     rebuildCoins(); rebuildEnemies(); rebuildCheckpoints(); rebuildMovingPlatforms();
     setCheckpointToSpawn();
     respawnToCheckpoint();
+    state.hud.resetTimer();
   }
 
   function restartLevelKeepingData() {
     resetToLoadedLevel();
     state.hud.setLives(3);
     state.hud.setCoins(0);
-    state.hud.resetTimer();
   }
 
   function onResize(w, h, dpr) {
@@ -128,21 +130,19 @@
   }
 
   function combinedPlatformRects() {
-    // statische + bewegliche als AABBs
     const list = state.level.platforms.slice();
     for (const m of state.mplats) list.push(m.aabb());
     return list;
   }
 
   function findMovingGroundUnderPlayer() {
-    // Epsilon knapp unter Spielerfuss
     const eps = 0.02;
     const px = state.player.x, py = state.player.y, pw = state.player.w, ph = state.player.h;
     for (const m of state.mplats) {
       const a = m.aabb();
       const feetOnTop =
-        (py + ph) <= (a.y + eps) && (py + ph) >= (a.y - eps) &&          // Fuss liegt auf Top-Kante
-        (px + pw) > a.x && px < (a.x + a.w);                              // horizontale Überdeckung
+        (py + ph) <= (a.y + eps) && (py + ph) >= (a.y - eps) &&
+        (px + pw) > a.x && px < (a.x + a.w);
       if (feetOnTop) return m;
     }
     return null;
@@ -153,22 +153,45 @@
     initOnce();
     if (!state.level.loaded) return;
 
-    // 1) Bewegliche Plattformen updaten (merken prevX/prevY intern)
+    // 0) Vorherige Player-Zustaende merken (fuer Events)
+    const wasGround = state.player.onGround;
+    const prevVy = state.player.vy;
+
+    // 1) Bewegliche Plattformen
     for (const m of state.mplats) m.update(dt);
 
-    // 2) Spieler updaten gegen kombiniertes Kollisionsset
+    // 2) Spieler (Kollisionen mit statischen + beweglichen AABBs)
     state.player.update(
       state.time, dt, Input, combinedPlatformRects(),
       { gravity: state.gravity, frictionGround: state.frictionGround, frictionAir: state.frictionAir }
     );
 
-    // 3) Coins einsammeln
-    for (const c of state.coins) c.tryCollect(state.player, () => state.hud.addCoins(1));
+    // 3) Jump-/Land-Events → Staub
+    // Jump: vorher Boden, jetzt Luft, und Sprung nach oben (prevVy < 0)
+    if (wasGround && !state.player.onGround && prevVy < 0) {
+      const dir = (Input.pressed('ArrowRight') || Input.pressed('KeyD')) ? 1
+                : (Input.pressed('ArrowLeft')  || Input.pressed('KeyA')) ? -1 : 0;
+      const fxX = state.player.x + state.player.w * 0.5;
+      const fxY = state.player.y + state.player.h;
+      state.fx.emitDust(fxX, fxY, dir);
+    }
+    // Landung: vorher Luft, jetzt Boden
+    if (!wasGround && state.player.onGround) {
+      const fxX = state.player.x + state.player.w * 0.5;
+      const fxY = state.player.y + state.player.h;
+      state.fx.emitLanding(fxX, fxY);
+    }
 
-    // 4) Gegner bewegen + Schaden
+    // 4) Coins
+    for (const c of state.coins) c.tryCollect(state.player, () => {
+      state.hud.addCoins(1);
+      state.fx.emitSparkles(c.x, c.y);
+    });
+
+    // 5) Gegner
     for (const e of state.enemies) { e.update(dt); e.checkHit(state.player, onPlayerHit); }
 
-    // 5) Checkpoints aktivieren
+    // 6) Checkpoints
     for (const cp of state.checkpoints) {
       const activated = cp.tryActivate(state.player, (which) => {
         for (const other of state.checkpoints) if (other !== which) other.active = false;
@@ -177,33 +200,27 @@
       if (activated) break;
     }
 
-    // 6) Player-Mitnahme durch bewegliche Plattformen (kein Durchrutschen)
+    // 7) Player-Mitnahme durch bewegliche Plattformen
     let ground = null;
-    if (state.player.onGround) {
-      ground = findMovingGroundUnderPlayer();
-    }
+    if (state.player.onGround) ground = findMovingGroundUnderPlayer();
     if (ground) {
       const dx = ground.x - ground.prevX;
       const dy = ground.y - ground.prevY;
-      // Plattformverschiebung auf den Spieler anwenden
-      state.player.x += dx;
-      state.player.y += dy;
-      // Sicherheitskorrektur: falls durch Rundung minimal einsinkt, wieder auf Top setzen
+      state.player.x += dx; state.player.y += dy;
       const a = ground.aabb();
-      if (state.player.y + state.player.h > a.y) {
-        state.player.y = a.y - state.player.h;
-      }
+      if (state.player.y + state.player.h > a.y) state.player.y = a.y - state.player.h;
       state.groundUnder = ground;
     } else {
       state.groundUnder = null;
     }
 
-    // 7) Kamera, HUD, Reset
+    // 8) Kamera, HUD, FX, Reset
     const px = state.player.x + state.player.w * 0.5;
     const py = state.player.y + state.player.h * 0.5;
     state.camera.follow(px, py, dt, 8);
 
     state.hud.update(dt);
+    state.fx.update(dt);
 
     if (Input.pressed('KeyR')) {
       resetAllCoinsVisible();
@@ -246,9 +263,7 @@
     for (const p of state.level.platforms) drawRect(ctx, p.x, p.y, p.w, p.h, 'rgba(17,20,28,0.65)');
 
     // Bewegliche Plattformen
-    for (const m of state.mplats) {
-      m.draw(ctx, worldToScreen, PX_PER_M);
-    }
+    for (const m of state.mplats) m.draw(ctx, worldToScreen, PX_PER_M);
 
     // Coins
     for (const c of state.coins) c.draw(ctx, worldToScreen, PX_PER_M, state.time);
@@ -271,6 +286,9 @@
     } else {
       state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
     }
+
+    // Partikel (oberhalb von Weltobjekten, unter HUD)
+    state.fx.draw(ctx, worldToScreen, PX_PER_M);
 
     // HUD
     state.hud.draw(ctx);
