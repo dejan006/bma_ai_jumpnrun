@@ -1,99 +1,102 @@
-// Game.Engine + einfache 2D-Physik (AABB) mit separater Achsenauflösung.
-// - Fixed-Timestep Loop
-// - Gravitation wird von Entities genutzt (hier keine globale Physik)
-// - moveAndCollide: horizontale/vertikale Sweeps
-// - aabbOverlap: Kollisionstest
+// Game.Engine – Fixed timestep + interpolation, low-GC main loop, resize handling.
+// API:
+//   const engine = new Game.Engine.Engine(canvas, {
+//     onUpdate(dt),          // fixed step; dt in seconds
+//     onRender(ctx, alpha),  // render with interpolation alpha in [0..1]
+//     onResize(w, h, dpr)    // optional; called on start + when canvas size changes
+//   });
+//   engine.start(); engine.stop();
 
 window.Game = window.Game || {};
 window.Game.Engine = (function () {
   'use strict';
 
-  const DPR_MAX = 2;
-  const FIXED_DT = 1 / 60;
-  const MAX_FRAME = 0.25;
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-  class Engine {
-    constructor(canvas, opts) {
-      this.canvas = canvas;
-      this.ctx = canvas.getContext('2d');
-      this.onUpdate = opts.onUpdate;
-      this.onRender = opts.onRender;
-      this.onResize = opts.onResize || (()=>{});
+  function Engine(canvas, callbacks, options) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
+    this.cb = callbacks || {};
+    this.opts = Object.assign({
+      step: 1 / 120,          // physics step (s)
+      maxAccum: 0.25,         // clamp to avoid spiral of death
+      autoStart: false
+    }, options || {});
+    this._raf = 0;
+    this._running = false;
+    this._accum = 0;
+    this._prevStamp = 0;
 
-      this._acc = 0;
-      this._last = performance.now() / 1000;
+    // cached pixel ratio + size
+    this._dpr = 1; this._vw = 0; this._vh = 0;
 
-      this._resize = this._resize.bind(this);
-      this._loop = this._loop.bind(this);
+    // bind
+    this._tick = this._tick.bind(this);
 
-      window.addEventListener('resize', this._resize);
-      this._resize();
-    }
+    this._resizeObserver = new ResizeObserver(() => this._applySize());
+    this._resizeObserver.observe(this.canvas);
 
-    _resize() {
-      const dpr = Math.min(DPR_MAX, Math.max(1, window.devicePixelRatio || 1));
-      const w = Math.floor(window.innerWidth);
-      const h = Math.floor(window.innerHeight);
-      this.canvas.width = Math.floor(w * dpr);
-      this.canvas.height = Math.floor(h * dpr);
+    // initial apply size & notify
+    this._applySize();
+
+    if (this.opts.autoStart) this.start();
+  }
+
+  Engine.prototype._applySize = function () {
+    const dpr = Math.max(1, Math.round(window.devicePixelRatio || 1));
+    const rect = this.canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.floor(rect.width));
+    const h = Math.max(1, Math.floor(rect.height));
+
+    if (w !== this._vw || h !== this._vh || dpr !== this._dpr) {
+      this._vw = w; this._vh = h; this._dpr = dpr;
+      this.canvas.width = Math.max(1, Math.floor(w * dpr));
+      this.canvas.height = Math.max(1, Math.floor(h * dpr));
       this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      this.onResize(w, h, dpr);
+      if (this.cb.onResize) this.cb.onResize(this._vw, this._vh, this._dpr);
     }
+  };
 
-    start() {
-      this._last = performance.now() / 1000;
-      requestAnimationFrame(this._loop);
+  Engine.prototype.start = function () {
+    if (this._running) return;
+    this._running = true;
+    this._accum = 0;
+    this._prevStamp = performance.now() / 1000;
+    this._raf = requestAnimationFrame(this._tick);
+  };
+
+  Engine.prototype.stop = function () {
+    if (!this._running) return;
+    cancelAnimationFrame(this._raf);
+    this._raf = 0;
+    this._running = false;
+  };
+
+  Engine.prototype._tick = function (tsMs) {
+    if (!this._running) return;
+    const now = tsMs / 1000;
+    let dt = now - this._prevStamp;
+    this._prevStamp = now;
+
+    // clamp & accumulate
+    dt = clamp(dt, 0, this.opts.maxAccum);
+    this._accum += dt;
+
+    const step = this.opts.step;
+    while (this._accum >= step) {
+      if (this.cb.onUpdate) this.cb.onUpdate(step);
+      this._accum -= step;
     }
+    const alpha = clamp(this._accum / step, 0, 1);
 
-    _loop() {
-      const now = performance.now() / 1000;
-      let frame = now - this._last;
-      this._last = now;
+    // clear (single clear; caller draws everything)
+    // NOTE: caller can also clear; leaving here for convenience
+    // this.ctx.clearRect(0, 0, this._vw, this._vh);
 
-      frame = Math.min(frame, MAX_FRAME);
-      this._acc += frame;
+    if (this.cb.onRender) this.cb.onRender(this.ctx, alpha);
 
-      while (this._acc >= FIXED_DT) {
-        this.onUpdate(FIXED_DT);
-        this._acc -= FIXED_DT;
-      }
-      this.onRender(this.ctx);
-      requestAnimationFrame(this._loop);
-    }
-  }
+    this._raf = requestAnimationFrame(this._tick);
+  };
 
-  // ---- AABB Utilities ----
-  function aabbOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
-    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
-  }
-
-  function moveAndCollide(body, dt, platforms) {
-    let { x, y, w, h, vx, vy } = body;
-    // Horizontal
-    x += vx * dt;
-    for (const p of platforms) {
-      if (aabbOverlap(x, y, w, h, p.x, p.y, p.w, p.h)) {
-        if (vx > 0) x = p.x - w;
-        else if (vx < 0) x = p.x + p.w;
-        vx = 0;
-      }
-    }
-    // Vertikal
-    y += vy * dt;
-    let landed = false;
-    for (const p of platforms) {
-      if (aabbOverlap(x, y, w, h, p.x, p.y, p.w, p.h)) {
-        if (vy > 0) { // fallend (Screen y+ nach unten)
-          y = p.y - h;
-          landed = true;
-        } else if (vy < 0) {
-          y = p.y + p.h;
-        }
-        vy = 0;
-      }
-    }
-    return { x, y, vx, vy, landed };
-  }
-
-  return { Engine, FIXED_DT, aabbOverlap, moveAndCollide };
+  return { Engine };
 })();
