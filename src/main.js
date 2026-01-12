@@ -1,5 +1,4 @@
-// Game Main – Mobile Touch-Controls (On-Screen) integriert
-// Touch-Buttons simulieren Keyboard (Arrow/WASD je nach Optionen) → keine Engine-Anpassungen nötig.
+// Game Main – Barrierefreiheit & Optionen (Kontrast, Screen-Shake, Reduce Motion, Lautstärke-Persistenz)
 
 (function () {
   'use strict';
@@ -42,7 +41,7 @@
     player: Player.create(0, 0),
     camera: Camera.create(),
     hud: HUD.create(),
-    fx: window.Game.Effects?.Particles?.create() || { update(){}, draw(){} },
+    fx: FX.create(),
     menu: Menu.create(),
     touch: null,
 
@@ -58,7 +57,11 @@
 
     gameState: 'menu', // 'menu' | 'playing' | 'paused' | 'options'
 
-    save: Save.load() // {version, unlocked, lastLevel, options}
+    save: Save.load(), // {version, unlocked, lastLevel, options}
+
+    // Screen-Shake
+    shakeAmp: 0, // aktuelle Amplitude in px
+    shakeDecay: 2.5 // Abklingrate
   };
 
   // ---------- Helpers ----------
@@ -79,6 +82,7 @@
   function onPlayerHit() {
     if (state.time < state.invulnTill) return;
     state.hud.addLives(-1);
+    triggerShake(8); // kräftiger Shake bei Schaden
     if (state.hud.lives <= 0) { restartLevelKeepingData(); return; }
     respawnToCheckpoint();
   }
@@ -159,9 +163,7 @@
   }
 
   function applyLoadedOptions() {
-    // Menü-Optionen spiegeln
     state.menu.setOptions(state.save.options);
-    // Mapping für TouchControls anpassen
     if (state.touch) state.touch.setMapping(state.save.options.controls === 'arrows' ? 'arrows' : 'wasd');
   }
 
@@ -192,8 +194,8 @@
   }
 
   function initTouchControls() {
-    if (!Touch || state.touch) return;
-    state.touch = Touch.create();
+    if (!window.Game.UI.TouchControls || state.touch) return;
+    state.touch = window.Game.UI.TouchControls.create();
     state.touch.setMapping(state.save.options.controls === 'arrows' ? 'arrows' : 'wasd');
   }
 
@@ -210,7 +212,6 @@
     initMenuCallbacks();
     setGameState('menu');
 
-    // Touch-Controls initialisieren (zeigen sich nur auf Touch-Geräten)
     initTouchControls();
     applyLoadedOptions();
 
@@ -247,10 +248,27 @@
     }
   }
 
+  // --- Screen-Shake helpers ---
+  function triggerShake(px) {
+    if (!state.save.options.screenShake || state.save.options.reduceMotion) return;
+    state.shakeAmp = Math.max(state.shakeAmp, px || 4);
+  }
+  function updateShake(dt) {
+    if (state.shakeAmp <= 0) return;
+    state.shakeAmp = Math.max(0, state.shakeAmp - state.shakeDecay * dt);
+  }
+  function sampleShake() {
+    if (state.shakeAmp <= 0) return { x: 0, y: 0 };
+    const ax = (Math.random() - 0.5) * state.shakeAmp;
+    const ay = (Math.random() - 0.5) * state.shakeAmp;
+    return { x: ax, y: ay };
+  }
+
   function onUpdate(dt) {
     state.time += dt;
     initOnce();
     handleGlobalToggles();
+    updateShake(dt);
     if (!state.level.loaded) return;
 
     if (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options') {
@@ -269,18 +287,22 @@
       { gravity: state.gravity, frictionGround: state.frictionGround, frictionAir: state.frictionAir }
     );
 
-    if (wasGround && !state.player.onGround && prevVy < 0) {
-      const dir = (Input.pressed('ArrowRight') || Input.pressed('KeyD')) ? 1
-                : (Input.pressed('ArrowLeft')  || Input.pressed('KeyA')) ? -1 : 0;
-      state.fx.emitDust(state.player.x + state.player.w * 0.5, state.player.y + state.player.h, dir);
-    }
-    if (!wasGround && state.player.onGround) {
-      state.fx.emitLanding(state.player.x + state.player.w * 0.5, state.player.y + state.player.h);
+    // Jump/Land Effekte – respektiere Reduce Motion
+    if (!state.save.options.reduceMotion) {
+      if (wasGround && !state.player.onGround && prevVy < 0) {
+        const dir = (Input.pressed('ArrowRight') || Input.pressed('KeyD')) ? 1
+                  : (Input.pressed('ArrowLeft')  || Input.pressed('KeyA')) ? -1 : 0;
+        state.fx.emitDust(state.player.x + state.player.w * 0.5, state.player.y + state.player.h, dir);
+      }
+      if (!wasGround && state.player.onGround) {
+        state.fx.emitLanding(state.player.x + state.player.w * 0.5, state.player.y + state.player.h);
+        triggerShake(3); // kleiner Shake bei Landung
+      }
     }
 
     for (const c of state.coins) c.tryCollect(state.player, () => {
       state.hud.addCoins(1);
-      state.fx.emitSparkles(c.x, c.y);
+      if (!state.save.options.reduceMotion) state.fx.emitSparkles(c.x, c.y);
     });
 
     for (const e of state.enemies) { e.update(dt); e.checkHit(state.player, onPlayerHit); }
@@ -346,14 +368,31 @@
     ctx.fillRect(a.x, a.y, Math.round(w * PX_PER_M), Math.round(h * PX_PER_M));
   }
 
-  function onRender(ctx) {
-    Back.draw(ctx, state.viewport.w, state.viewport.h, state.camera.x, state.camera.y, state.time);
+  // Kontrast-Overlays: Umrandungen für wichtige Objekte
+  function outlineRect(ctx, x, y, w, h, thick = 2) {
+    const a = worldToScreen(x, y);
+    ctx.lineWidth = thick;
+    ctx.strokeStyle = '#fff';
+    ctx.strokeRect(a.x + 0.5, a.y + 0.5, Math.round(w * PX_PER_M) - 1, Math.round(h * PX_PER_M) - 1);
+    ctx.strokeStyle = '#000';
+    ctx.strokeRect(a.x + 1.5, a.y + 1.5, Math.round(w * PX_PER_M) - 3, Math.round(h * PX_PER_M) - 3);
+  }
 
+  function onRender(ctx) {
+    // optionaler Screen-Shake-Offset nur für Welt (nicht HUD/Menü)
+    const sh = sampleShake();
+
+    // Hintergrund
+    ctx.save();
+    ctx.translate(sh.x, sh.y);
+    Back.draw(ctx, state.viewport.w, state.viewport.h, state.camera.x, state.camera.y, state.time);
+    // Welt
     if (!state.level.loaded) {
       ctx.fillStyle = 'rgba(255,255,255,.85)';
       ctx.font = '16px system-ui, sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText('Lädt Level…', state.viewport.w / 2, state.viewport.h / 2);
+      ctx.restore();
       return;
     }
 
@@ -366,9 +405,9 @@
     for (const cp of state.checkpoints) cp.draw(ctx, worldToScreen, PX_PER_M, state.time,
       Math.abs(cp.respawnX - state.checkpoint.x) < 0.01 && Math.abs(cp.respawnY - state.checkpoint.y) < 0.01
     );
-
     if (state.goal) state.goal.draw(ctx, worldToScreen, PX_PER_M, state.time);
 
+    // Spieler
     if (state.time < state.invulnTill) {
       ctx.save(); ctx.globalAlpha = 0.6 + Math.sin(state.time * 30) * 0.2;
       state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
@@ -377,9 +416,25 @@
       state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
     }
 
-    state.fx.draw(ctx, worldToScreen, PX_PER_M);
+    // High-Contrast-Umrandungen
+    if (state.save.options.highContrast) {
+      for (const p of state.level.platforms) outlineRect(ctx, p.x, p.y, p.w, p.h, 2);
+      for (const m of state.mplats) outlineRect(ctx, m.x, m.y, m.w, m.h, 2);
+      for (const e of state.enemies) outlineRect(ctx, e.x, e.y, e.w, e.h, 2);
+      outlineRect(ctx, state.player.x, state.player.y, state.player.w, state.player.h, 2);
+      if (state.goal) outlineRect(ctx, state.goal.x, state.goal.y, state.goal.w, state.goal.h, 2);
+    }
+
+    // Partikel
+    if (!state.save.options.reduceMotion) {
+      state.fx.draw(ctx, worldToScreen, PX_PER_M);
+    }
+    ctx.restore(); // Ende Welt inkl. Shake
+
+    // HUD
     state.hud.draw(ctx);
 
+    // Menü-Overlay
     if (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options') {
       state.menu.draw(ctx, state.viewport.w, state.viewport.h);
     }
@@ -389,7 +444,10 @@
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
     const unlockedList = Object.keys(state.save.unlocked).filter(k => state.save.unlocked[k]).sort().join(',');
-    ctx.fillText(`lvl=${state.currentLevel} unlocked=[${unlockedList}]`, state.viewport.w - 10, state.viewport.h - 10);
+    ctx.fillText(
+      `lvl=${state.currentLevel} unlocked=[${unlockedList}] HC=${state.save.options.highContrast?'1':'0'} SM=${state.save.options.screenShake?'1':'0'} RM=${state.save.options.reduceMotion?'1':'0'}`,
+      state.viewport.w - 10, state.viewport.h - 10
+    );
   }
 
   const engine = new Engine(canvas, { onUpdate, onRender, onResize });

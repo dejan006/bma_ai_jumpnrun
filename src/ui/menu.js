@@ -1,4 +1,4 @@
-// Game.UI.Menu – Start/Pause/Optionen (mit einstellbarer Lautstaerke & Steuerung)
+// Game.UI.Menu – Start/Pause/Optionen (barrierefrei-Optionen)
 // Navigation: ↑/↓ bzw. W/S, Enter/Space = OK, Esc = Zurück, ←/→ in Optionen zum Anpassen.
 
 window.Game = window.Game || {};
@@ -12,7 +12,13 @@ window.Game.UI.Menu = (function () {
       screen: 'start',   // 'start' | 'pause' | 'options'
       sel: 0,
       items: [],
-      options: { volume: 1.0, controls: 'wasd' },
+      options: {
+        volume: 1.0,
+        controls: 'wasd',
+        highContrast: false,
+        screenShake: true,
+        reduceMotion: false
+      },
       cb: {
         onStart: null,
         onResume: null,
@@ -44,11 +50,14 @@ window.Game.UI.Menu = (function () {
           { label: 'Zum Start',  action: () => state.cb.onBackToStart && state.cb.onBackToStart() }
         ];
       } else {
-        // Options-Screen: pseudo-Items (Volume, Controls, Zurück)
+        // Options-Screen
         state.items = [
-          { key: 'volume',   label: () => `Lautstaerke: ${(Math.round(state.options.volume*100)).toString().padStart(3,' ')}%` },
-          { key: 'controls', label: () => `Steuerung:  ${state.options.controls === 'wasd' ? 'WASD' : 'Pfeile'}` },
-          { key: 'back',     label: () => 'Zurück' }
+          { key: 'volume',       label: () => `Lautstärke: ${(Math.round(state.options.volume*100)).toString().padStart(3,' ')}%` },
+          { key: 'controls',     label: () => `Steuerung:  ${state.options.controls === 'wasd' ? 'WASD' : 'Pfeile'}` },
+          { key: 'highContrast', label: () => `Hoher Kontrast: ${state.options.highContrast ? 'An' : 'Aus'}` },
+          { key: 'screenShake',  label: () => `Screen-Shake:   ${state.options.screenShake ? 'An' : 'Aus'}` },
+          { key: 'reduceMotion', label: () => `Bewegungen reduzieren: ${state.options.reduceMotion ? 'An' : 'Aus'}` },
+          { key: 'back',         label: () => 'Zurück' }
         ];
       }
       state.sel = 0;
@@ -72,6 +81,15 @@ window.Game.UI.Menu = (function () {
         const next = modes[(idx + d + modes.length) % modes.length];
         state.options.controls = next;
         state.cb.onOptionsChanged && state.cb.onOptionsChanged(state.options);
+      } else if (it.key === 'highContrast') {
+        state.options.highContrast = !state.options.highContrast;
+        state.cb.onOptionsChanged && state.cb.onOptionsChanged(state.options);
+      } else if (it.key === 'screenShake') {
+        state.options.screenShake = !state.options.screenShake;
+        state.cb.onOptionsChanged && state.cb.onOptionsChanged(state.options);
+      } else if (it.key === 'reduceMotion') {
+        state.options.reduceMotion = !state.options.reduceMotion;
+        state.cb.onOptionsChanged && state.cb.onOptionsChanged(state.options);
       }
     }
 
@@ -80,7 +98,10 @@ window.Game.UI.Menu = (function () {
       if (!it) return;
       if (state.screen === 'options') {
         if (it.key === 'back') {
-          open('pause'); // zurück ins Pausemenü (oder Startmenü, wenn du willst)
+          open('pause');
+        } else {
+          // Taster auf Options toggeln/ändern
+          adjustOption(+1);
         }
       } else {
         if (it.action) it.action();
@@ -112,8 +133,8 @@ window.Game.UI.Menu = (function () {
 
     function drawPanel(ctx, w, h, title) {
       ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, w, h);
-      const pw = Math.min(460, Math.floor(w * 0.9));
-      const ph = Math.min(360, Math.floor(h * 0.82));
+      const pw = Math.min(520, Math.floor(w * 0.9));
+      const ph = Math.min(400, Math.floor(h * 0.84));
       const px = Math.floor((w - pw) / 2), py = Math.floor((h - ph) / 2);
       ctx.fillStyle = 'rgba(12,15,24,0.9)'; ctx.fillRect(px, py, pw, ph);
       ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
@@ -125,7 +146,7 @@ window.Game.UI.Menu = (function () {
     }
 
     function draw(ctx, viewW, viewH) {
-      const title = state.screen === 'start' ? 'Startmenue'
+      const title = state.screen === 'start' ? 'Startmenü'
                   : state.screen === 'pause' ? 'Pause'
                   : 'Optionen';
       const panel = drawPanel(ctx, viewW, viewH, title);
@@ -138,18 +159,18 @@ window.Game.UI.Menu = (function () {
       for (let i = 0; i < state.items.length; i++) {
         const sel = (i === state.sel);
         const label = typeof state.items[i].label === 'function' ? state.items[i].label() : state.items[i].label;
-        ctx.fillStyle = sel ? '#e2e8f0' : 'rgba(255,255,255,0.8)';
+        ctx.fillStyle = sel ? '#e2e8f0' : 'rgba(255,255,255,0.86)';
         ctx.fillText(label, panel.px + panel.pw / 2, y + i * lineH);
         if (sel) {
           ctx.fillStyle = '#93c5fd';
-          ctx.fillRect(panel.px + panel.pw / 2 - 110, y + i * lineH + 12, 220, 2);
+          ctx.fillRect(panel.px + panel.pw / 2 - 130, y + i * lineH + 12, 260, 2);
         }
       }
 
       ctx.fillStyle = 'rgba(255,255,255,0.6)';
       ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
       const footer = state.screen === 'options'
-        ? '↑/↓: Auswahl   •   ←/→: Wert ändern   •   Enter: OK   •   Esc: Zurück'
+        ? '↑/↓: Auswahl   •   ←/→: Wert ändern/umschalten   •   Enter: OK   •   Esc: Zurück'
         : '↑/↓: Auswahl   •   Enter: OK   •   Esc: Zurück';
       ctx.fillText(footer, panel.px + panel.pw / 2, panel.py + panel.ph - 20);
     }

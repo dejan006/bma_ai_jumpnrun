@@ -4,7 +4,13 @@
 //   "version": 1,
 //   "unlocked": {"level1": true, "level2": true|false},
 //   "lastLevel": "level1"|"level2",
-//   "options": { "volume": 1.0, "controls": "wasd"|"arrows" }
+//   "options": {
+//      "volume": 1.0,
+//      "controls": "wasd"|"arrows",
+//      "highContrast": false,
+//      "screenShake": true,
+//      "reduceMotion": false
+//   }
 // }
 
 window.Game = window.Game || {};
@@ -17,9 +23,15 @@ window.Game.State.Save = (function () {
 
   const defaults = {
     version: 1,
-    unlocked: { level1: true },     // level1 immer frei
+    unlocked: { level1: true },
     lastLevel: 'level1',
-    options: { volume: 1.0, controls: 'wasd' }
+    options: {
+      volume: 1.0,
+      controls: 'wasd',
+      highContrast: false,
+      screenShake: true,
+      reduceMotion: false
+    }
   };
 
   function safeParse(json) {
@@ -30,11 +42,9 @@ window.Game.State.Save = (function () {
     const raw = localStorage.getItem(KEY);
     const data = safeParse(raw);
     if (!data || data.version !== 1) {
-      // First run / inkompatibel → Defaults schreiben
       localStorage.setItem(KEY, JSON.stringify(defaults));
       return structuredClone(defaults);
     }
-    // Merge gegen Defaults, falls Felder fehlen
     const merged = structuredClone(defaults);
     Object.assign(merged.unlocked, data.unlocked || {});
     merged.lastLevel = data.lastLevel || merged.lastLevel;
@@ -74,5 +84,28 @@ window.Game.State.Save = (function () {
     save(s);
   }
 
-  return { load, save, unlock, setLastLevel, setVolume, setControls };
+  function setHighContrast(on) {
+    const s = load();
+    s.options.highContrast = !!on;
+    save(s);
+  }
+
+  function setScreenShake(on) {
+    const s = load();
+    s.options.screenShake = !!on;
+    save(s);
+  }
+
+  function setReduceMotion(on) {
+    const s = load();
+    s.options.reduceMotion = !!on;
+    save(s);
+  }
+
+  return {
+    load, save,
+    unlock, setLastLevel,
+    setVolume, setControls,
+    setHighContrast, setScreenShake, setReduceMotion
+  };
 })();
