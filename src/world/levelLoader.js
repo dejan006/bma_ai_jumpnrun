@@ -1,8 +1,5 @@
 // Game.World.LevelLoader – lädt Level-JSON und berechnet Bounds.
-// Nutzung:
-//   LevelLoader.load('level1').then(level => { ... });
-// Rückgabe-Objekt:
-//   { name, spawn:{x,y}, platforms:[...], bounds:{minX,minY,maxX,maxY} }
+// Rueckgabe: { name, spawn:{x,y}, platforms:[...], tiles, coins:[{x,y}], bounds:{minX,minY,maxX,maxY} }
 
 window.Game = window.Game || {};
 window.Game.World = window.Game.World || {};
@@ -16,6 +13,8 @@ window.Game.World.LevelLoader = (function () {
 
     const platforms = Array.isArray(data.platforms) ? data.platforms : [];
     const spawn = data.spawn || { x: 0, y: 0 };
+    const tiles = data.tiles || null;
+    const coins = Array.isArray(data.coins) ? data.coins : [];
 
     // Bounds aus Plattformen ableiten
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -31,7 +30,7 @@ window.Game.World.LevelLoader = (function () {
     }
     const bounds = { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
 
-    return { name: data.name || name, spawn, platforms, bounds };
+    return { name: data.name || name, spawn, platforms, tiles, coins, bounds };
   }
 
   return { load };

@@ -1,4 +1,4 @@
-// Game Main – HUD integriert (Lives/Coins/Timer) und aktualisiert sich im Spiel.
+// Game Main – Coins: laden aus JSON, zeichnen, Kollision → HUD + SFX.
 
 (function () {
   'use strict';
@@ -6,6 +6,7 @@
   const { Engine } = window.Game.Engine;
   const Input = window.Game.Input;
   const Player = window.Game.Entities.Player;
+  const Coin = window.Game.Entities.Coin;
   const Camera = window.Game.Camera;
   const LevelLoader = window.Game.World.LevelLoader;
 
@@ -24,11 +25,12 @@
     frictionGround: 18,
     frictionAir: 2,
 
-    level: { loaded: false, name: '', platforms: [], spawn: { x:0, y:0 }, bounds: null },
+    level: { loaded: false, name: '', platforms: [], spawn: { x:0, y:0 }, bounds: null, coins: [] },
 
     player: Player.create(0, 0),
     camera: Camera.create(),
-    hud: HUD.create()
+    hud: HUD.create(),
+    coins: [] // Coin-Instanzen
   };
 
   // ---------- Helpers ----------
@@ -37,7 +39,6 @@
     const cx = state.player.x + state.player.w * 0.5;
     const cy = state.player.y + state.player.h * 0.5;
     state.camera.snapTo(cx, cy);
-    // Beispiel: Timer beim Respawn zuruecksetzen (kannst du spaeter aendern)
     state.hud.resetTimer();
   }
 
@@ -48,28 +49,33 @@
     state.camera.resize(w, h, PX_PER_M);
   }
 
+  function buildCoins() {
+    state.coins = (state.level.coins || []).map(c => Coin.create(c.x, c.y, 0.35));
+  }
+
   function initOnce() {
     if (state._inited) return;
     Input.init();
     state.camera.setOffsets(0, 2);
 
-    // HUD Startwerte (kannst du spaeter via Events anpassen)
     state.hud.setLives(3);
     state.hud.setCoins(0);
     state.hud.resetTimer();
 
-    // Level laden (asynchron)
+    // Level laden
     LevelLoader.load('level1').then(level => {
       state.level = { ...level, loaded: true };
       const b = state.level.bounds;
       state.camera.setBounds(b.minX, b.minY, b.maxX, b.maxY);
       Tiles.buildFromLevel(state.level, PX_PER_M);
+      buildCoins();
       resetPlayerToSpawn();
     }).catch(err => {
       console.error(err);
-      state.level = { loaded: true, name: 'error', platforms: [], spawn: {x:0,y:0}, bounds: {minX:-50,minY:-20,maxX:50,maxY:50} };
+      state.level = { loaded: true, name: 'error', platforms: [], spawn: {x:0,y:0}, bounds: {minX:-50,minY:-20,maxX:50,maxY:50}, coins: [] };
       state.camera.clearBounds();
       Tiles.buildFromLevel(state.level, PX_PER_M);
+      buildCoins();
       resetPlayerToSpawn();
     });
 
@@ -91,16 +97,28 @@
       { gravity: state.gravity, frictionGround: state.frictionGround, frictionAir: state.frictionAir }
     );
 
+    // Coins sammeln
+    for (const c of state.coins) {
+      c.tryCollect(state.player, () => {
+        state.hud.addCoins(1);
+      });
+    }
+
     // Kamera
     const px = state.player.x + state.player.w * 0.5;
     const py = state.player.y + state.player.h * 0.5;
     state.camera.follow(px, py, dt, 8);
 
-    // HUD-Zeit laeuft
+    // HUD
     state.hud.update(dt);
 
     // Reset
-    if (Input.pressed('KeyR')) resetPlayerToSpawn();
+    if (Input.pressed('KeyR')) {
+      // Coins resetten (alle wieder sichtbar) und HUD-Coins zurücksetzen
+      for (const c of state.coins) c.collected = false;
+      state.hud.setCoins(0);
+      resetPlayerToSpawn();
+    }
   }
 
   function worldToScreen(x, y) {
@@ -135,18 +153,23 @@
       drawRect(ctx, p.x, p.y, p.w, p.h, 'rgba(17,20,28,0.65)');
     }
 
+    // Coins
+    for (const c of state.coins) {
+      c.draw(ctx, worldToScreen, PX_PER_M, state.time);
+    }
+
     // Spieler
     state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
 
     // HUD
     state.hud.draw(ctx);
 
-    // Debug mini (unten rechts)
+    // Debug mini
     ctx.fillStyle = 'rgba(255,255,255,.6)';
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
     ctx.fillText(
-      `lvl=${state.level.name} cam=(${state.camera.x.toFixed(2)}, ${state.camera.y.toFixed(2)})`,
+      `coins=${state.hud.coins} cam=(${state.camera.x.toFixed(2)}, ${state.camera.y.toFixed(2)})`,
       state.viewport.w - 10,
       state.viewport.h - 10
     );
