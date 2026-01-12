@@ -1,4 +1,5 @@
-// Game Main – Partikel: Staub (Sprung/Landung) & Sparkles (Coin) mit Pooling.
+// Game Main – State-Machine: Startmenü, Spielen, Pause, Optionen
+// Tasten: P oder Esc = Pause/Resume, Enter = bestätigen (im Menü)
 
 (function () {
   'use strict';
@@ -17,6 +18,7 @@
   const Tiles = window.Game.Render.Tiles;
   const HUD   = window.Game.UI.HUD;
   const FX    = window.Game.Effects.Particles;
+  const Menu  = window.Game.UI.Menu;
 
   const canvas = document.getElementById('game');
   const PX_PER_M = 40;
@@ -35,6 +37,7 @@
     camera: Camera.create(),
     hud: HUD.create(),
     fx: FX.create(),
+    menu: Menu.create(),
 
     coins: [],
     enemies: [],
@@ -43,8 +46,10 @@
 
     checkpoint: { x: 0, y: 0 },
     invulnTill: 0,
+    groundUnder: null,
 
-    groundUnder: null // bewegliche Plattform unter dem Spieler (falls vorhanden)
+    // Spiel-Zustaende
+    gameState: 'menu' // 'menu' | 'playing' | 'paused' | 'options'
   };
 
   // ---------- Helpers ----------
@@ -78,9 +83,7 @@
       return inst;
     });
   }
-  function rebuildMovingPlatforms() {
-    state.mplats = (state.level.movingPlatforms || []).map(mp => MPlat.create(mp));
-  }
+  function rebuildMovingPlatforms() { state.mplats = (state.level.movingPlatforms || []).map(mp => MPlat.create(mp)); }
 
   function resetToLoadedLevel() {
     const b = state.level.bounds;
@@ -103,6 +106,30 @@
     state.camera.resize(w, h, PX_PER_M);
   }
 
+  function setGameState(s) {
+    state.gameState = s;
+    if (s === 'menu')     state.menu.open('start');
+    if (s === 'paused')   state.menu.open('pause');
+    if (s === 'options')  state.menu.open('options');
+  }
+
+  function initMenuCallbacks() {
+    state.menu.setCallbacks({
+      onStart: () => {
+        // frischer Start
+        restartLevelKeepingData();
+        setGameState('playing');
+      },
+      onResume: () => setGameState('playing'),
+      onReset: () => {
+        restartLevelKeepingData();
+        setGameState('playing');
+      },
+      onOpenOptions: () => setGameState('options'),
+      onBackToStart: () => { setGameState('menu'); }
+    });
+  }
+
   function initOnce() {
     if (state._inited) return;
     Input.init();
@@ -111,6 +138,9 @@
     state.hud.setLives(3);
     state.hud.setCoins(0);
     state.hud.resetTimer();
+
+    initMenuCallbacks();
+    setGameState('menu'); // Beim Start im Startmenü
 
     LevelLoader.load('level1').then(level => {
       state.level = { ...level, loaded: true };
@@ -148,50 +178,67 @@
     return null;
   }
 
+  function handleGlobalToggles() {
+    // Pause-Taste: P/Esc
+    const wantPause = Input.pressed('KeyP') || Input.pressed('Escape');
+    if (wantPause && state.level.loaded) {
+      if (state.gameState === 'playing') setGameState('paused');
+      else if (state.gameState === 'paused') setGameState('playing');
+    }
+  }
+
   function onUpdate(dt) {
     state.time += dt;
     initOnce();
+    handleGlobalToggles();
+
+    // Hintergrund-Animationen etc. laufen weiter; Gameplay je nach State
     if (!state.level.loaded) return;
 
-    // 0) Vorherige Player-Zustaende merken (fuer Events)
+    if (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options') {
+      // Menü bekommt Eingaben, aber keine Spielwelt-Updates (Timer pausiert in Pause/Options)
+      state.menu.update(Input);
+      if (state.gameState === 'menu') {
+        // Im Startmenü lassen wir HUD-Timer ruhen (bleibt 0)
+      } else if (state.gameState === 'paused' || state.gameState === 'options') {
+        // nichts tickt (keine HUD- oder Spielerupdates)
+      }
+      return;
+    }
+
+    // === PLAYING ===
     const wasGround = state.player.onGround;
     const prevVy = state.player.vy;
 
-    // 1) Bewegliche Plattformen
+    // Bewegliche Plattformen
     for (const m of state.mplats) m.update(dt);
 
-    // 2) Spieler (Kollisionen mit statischen + beweglichen AABBs)
+    // Spieler
     state.player.update(
       state.time, dt, Input, combinedPlatformRects(),
       { gravity: state.gravity, frictionGround: state.frictionGround, frictionAir: state.frictionAir }
     );
 
-    // 3) Jump-/Land-Events → Staub
-    // Jump: vorher Boden, jetzt Luft, und Sprung nach oben (prevVy < 0)
+    // Jump/Land FX
     if (wasGround && !state.player.onGround && prevVy < 0) {
       const dir = (Input.pressed('ArrowRight') || Input.pressed('KeyD')) ? 1
                 : (Input.pressed('ArrowLeft')  || Input.pressed('KeyA')) ? -1 : 0;
-      const fxX = state.player.x + state.player.w * 0.5;
-      const fxY = state.player.y + state.player.h;
-      state.fx.emitDust(fxX, fxY, dir);
+      state.fx.emitDust(state.player.x + state.player.w * 0.5, state.player.y + state.player.h, dir);
     }
-    // Landung: vorher Luft, jetzt Boden
     if (!wasGround && state.player.onGround) {
-      const fxX = state.player.x + state.player.w * 0.5;
-      const fxY = state.player.y + state.player.h;
-      state.fx.emitLanding(fxX, fxY);
+      state.fx.emitLanding(state.player.x + state.player.w * 0.5, state.player.y + state.player.h);
     }
 
-    // 4) Coins
+    // Coins
     for (const c of state.coins) c.tryCollect(state.player, () => {
       state.hud.addCoins(1);
       state.fx.emitSparkles(c.x, c.y);
     });
 
-    // 5) Gegner
+    // Gegner
     for (const e of state.enemies) { e.update(dt); e.checkHit(state.player, onPlayerHit); }
 
-    // 6) Checkpoints
+    // Checkpoints
     for (const cp of state.checkpoints) {
       const activated = cp.tryActivate(state.player, (which) => {
         for (const other of state.checkpoints) if (other !== which) other.active = false;
@@ -200,7 +247,7 @@
       if (activated) break;
     }
 
-    // 7) Player-Mitnahme durch bewegliche Plattformen
+    // Mitnahme bewegliche Plattform
     let ground = null;
     if (state.player.onGround) ground = findMovingGroundUnderPlayer();
     if (ground) {
@@ -214,7 +261,7 @@
       state.groundUnder = null;
     }
 
-    // 8) Kamera, HUD, FX, Reset
+    // Kamera, HUD, FX
     const px = state.player.x + state.player.w * 0.5;
     const py = state.player.y + state.player.h * 0.5;
     state.camera.follow(px, py, dt, 8);
@@ -222,6 +269,7 @@
     state.hud.update(dt);
     state.fx.update(dt);
 
+    // Manueller Reset (während Spiel)
     if (Input.pressed('KeyR')) {
       resetAllCoinsVisible();
       state.hud.setCoins(0);
@@ -245,7 +293,7 @@
   }
 
   function onRender(ctx) {
-    // Hintergrund
+    // Hintergrund (läuft immer)
     Back.draw(ctx, state.viewport.w, state.viewport.h, state.camera.x, state.camera.y, state.time);
 
     if (!state.level.loaded) {
@@ -256,49 +304,50 @@
       return;
     }
 
-    // Tiles
+    // Welt zeichnen (auch im Menü sichtbar als Hintergrund)
     Tiles.draw(ctx, state.viewport.w, state.viewport.h, state.camera, PX_PER_M);
 
-    // Statische Plattformkanten
     for (const p of state.level.platforms) drawRect(ctx, p.x, p.y, p.w, p.h, 'rgba(17,20,28,0.65)');
-
-    // Bewegliche Plattformen
     for (const m of state.mplats) m.draw(ctx, worldToScreen, PX_PER_M);
-
-    // Coins
     for (const c of state.coins) c.draw(ctx, worldToScreen, PX_PER_M, state.time);
-
-    // Enemies
     for (const e of state.enemies) e.draw(ctx, worldToScreen, PX_PER_M, state.time);
-
-    // Checkpoints
     for (const cp of state.checkpoints) cp.draw(
       ctx, worldToScreen, PX_PER_M, state.time,
       Math.abs(cp.respawnX - state.checkpoint.x) < 0.01 && Math.abs(cp.respawnY - state.checkpoint.y) < 0.01
     );
 
-    // Spieler (Hit-Feedback)
-    if (state.time < state.invulnTill) {
-      ctx.save();
-      ctx.globalAlpha = 0.6 + Math.sin(state.time * 30) * 0.2;
-      state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
-      ctx.restore();
+    // Spieler (nur in playing sichtbar ohne Overlay-Dimmung)
+    if (state.gameState === 'playing') {
+      if (state.time < state.invulnTill) {
+        ctx.save();
+        ctx.globalAlpha = 0.6 + Math.sin(state.time * 30) * 0.2;
+        state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
+        ctx.restore();
+      } else {
+        state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
+      }
     } else {
+      // In Menüzuständen zeichnen wir den Spieler auch, aber Menü dimmt darüber
       state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
     }
 
-    // Partikel (oberhalb von Weltobjekten, unter HUD)
+    // Partikel
     state.fx.draw(ctx, worldToScreen, PX_PER_M);
 
-    // HUD
+    // HUD (Timer pausiert automatisch, weil wir ihn im Update nicht erhöhen)
     state.hud.draw(ctx);
+
+    // Menü-Overlay bei menu/pause/options
+    if (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options') {
+      state.menu.draw(ctx, state.viewport.w, state.viewport.h);
+    }
 
     // Debug mini
     ctx.fillStyle = 'rgba(255,255,255,.6)';
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
     ctx.fillText(
-      `lives=${state.hud.lives} coins=${state.hud.coins}`,
+      `state=${state.gameState} lives=${state.hud.lives} coins=${state.hud.coins}`,
       state.viewport.w - 10, state.viewport.h - 10
     );
   }
