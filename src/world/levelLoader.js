@@ -1,4 +1,4 @@
-// Rueckgabe: { name, spawn, platforms, tiles, coins, enemies, checkpoints, movingPlatforms, bounds }
+// Rueckgabe: { name, spawn, platforms, tiles, coins, enemies, checkpoints, movingPlatforms, goal, bounds }
 
 window.Game = window.Game || {};
 window.Game.World = window.Game.World || {};
@@ -17,21 +17,22 @@ window.Game.World.LevelLoader = (function () {
     const enemies         = Array.isArray(data.enemies)          ? data.enemies          : [];
     const checkpoints     = Array.isArray(data.checkpoints)      ? data.checkpoints      : [];
     const movingPlatforms = Array.isArray(data.movingPlatforms)  ? data.movingPlatforms  : [];
+    const goal            = data.goal || null;
 
-    // Bounds aus Plattformen
+    // Bounds aus statischen + beweglichen Plattformen
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    const allRects = platforms.concat(movingPlatforms);
-    if (allRects.length === 0) { minX = -50; minY = -20; maxX = 50; maxY = 50; }
-    for (const p of allRects) {
-      if (p.x < minX) minX = p.x;
-      if (p.y < minY) minY = p.y;
-      if (p.x + p.w > maxX) maxX = p.x + p.w;
-      if (p.y + p.h > maxY) maxY = p.y + p.h;
+    const rects = platforms.concat(movingPlatforms);
+    if (rects.length === 0) { minX = -50; minY = -20; maxX = 50; maxY = 50; }
+    for (const r of rects) {
+      if (r.x < minX) minX = r.x;
+      if (r.y < minY) minY = r.y;
+      if (r.x + r.w > maxX) maxX = r.x + r.w;
+      if (r.y + r.h > maxY) maxY = r.y + r.h;
     }
     const pad = typeof data.boundsPadding === 'number' ? data.boundsPadding : 2;
     const bounds = { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
 
-    return { name: data.name || name, spawn, platforms, tiles, coins, enemies, checkpoints, movingPlatforms, bounds };
+    return { name: data.name || name, spawn, platforms, tiles, coins, enemies, checkpoints, movingPlatforms, goal, bounds };
   }
 
   return { load };

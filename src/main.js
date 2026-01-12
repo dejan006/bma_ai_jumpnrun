@@ -1,5 +1,4 @@
-// Game Main – State-Machine: Startmenü, Spielen, Pause, Optionen
-// Tasten: P oder Esc = Pause/Resume, Enter = bestätigen (im Menü)
+// Game Main – Multiple Levels + Goal/Levelwechsel (level1 -> level2 -> level1 ...)
 
 (function () {
   'use strict';
@@ -11,6 +10,7 @@
   const Enemy   = window.Game.Entities.PatrolEnemy;
   const Cp      = window.Game.Entities.Checkpoint;
   const MPlat   = window.Game.Entities.MovingPlatform;
+  const Goal    = window.Game.Entities.Goal;
   const Camera  = window.Game.Camera;
   const LevelLoader = window.Game.World.LevelLoader;
 
@@ -23,6 +23,8 @@
   const canvas = document.getElementById('game');
   const PX_PER_M = 40;
 
+  const LEVEL_SEQUENCE = [ 'level1', 'level2' ];
+
   const state = {
     time: 0,
     viewport: { w: 0, h: 0, dpr: 1 },
@@ -31,24 +33,25 @@
     frictionGround: 18,
     frictionAir: 2,
 
-    level: { loaded: false, name: '', platforms: [], tiles: null, coins: [], enemies: [], checkpoints: [], movingPlatforms: [], bounds: null },
+    currentLevel: 'level1',
+    level: { loaded: false, name: '', platforms: [], tiles: null, coins: [], enemies: [], checkpoints: [], movingPlatforms: [], goal: null, bounds: null },
 
     player: Player.create(0, 0),
     camera: Camera.create(),
     hud: HUD.create(),
     fx: FX.create(),
-    menu: Menu.create(),
+    menu: (window.Game.UI.Menu && window.Game.UI.Menu.create()) || { open() {}, update() {}, draw() {} },
 
     coins: [],
     enemies: [],
     checkpoints: [],
     mplats: [],
+    goal: null,
 
     checkpoint: { x: 0, y: 0 },
     invulnTill: 0,
     groundUnder: null,
 
-    // Spiel-Zustaende
     gameState: 'menu' // 'menu' | 'playing' | 'paused' | 'options'
   };
 
@@ -74,9 +77,9 @@
     respawnToCheckpoint();
   }
 
-  function rebuildCoins()   { state.coins   = (state.level.coins   || []).map(c => Coin.create(c.x, c.y, 0.35)); }
-  function rebuildEnemies() { state.enemies = (state.level.enemies || []).map(e => Enemy.create(e)); }
-  function rebuildCheckpoints() {
+  function rebuildCoins()        { state.coins        = (state.level.coins   || []).map(c => Coin.create(c.x, c.y, 0.35)); }
+  function rebuildEnemies()      { state.enemies      = (state.level.enemies || []).map(e => Enemy.create(e)); }
+  function rebuildCheckpoints()  {
     state.checkpoints = (state.level.checkpoints || []).map(cp => {
       const inst = Cp.create(cp.x, cp.y);
       if (Math.abs(cp.x - state.level.spawn.x) < 0.01 && Math.abs(cp.y - state.level.spawn.y) < 0.01) inst.active = true;
@@ -84,21 +87,55 @@
     });
   }
   function rebuildMovingPlatforms() { state.mplats = (state.level.movingPlatforms || []).map(mp => MPlat.create(mp)); }
+  function rebuildGoal() {
+    state.goal = state.level.goal ? Goal.create(state.level.goal) : null;
+  }
 
   function resetToLoadedLevel() {
     const b = state.level.bounds;
     state.camera.setBounds(b.minX, b.minY, b.maxX, b.maxY);
     Tiles.buildFromLevel(state.level, PX_PER_M);
-    rebuildCoins(); rebuildEnemies(); rebuildCheckpoints(); rebuildMovingPlatforms();
+    rebuildCoins(); rebuildEnemies(); rebuildCheckpoints(); rebuildMovingPlatforms(); rebuildGoal();
     setCheckpointToSpawn();
     respawnToCheckpoint();
     state.hud.resetTimer();
   }
 
   function restartLevelKeepingData() {
-    resetToLoadedLevel();
+    // Restart des gleichen Levels
+    loadLevel(state.currentLevel, true);
     state.hud.setLives(3);
     state.hud.setCoins(0);
+  }
+
+  function nextLevelName() {
+    const idx = LEVEL_SEQUENCE.indexOf(state.currentLevel);
+    const n = (idx + 1) % LEVEL_SEQUENCE.length;
+    return LEVEL_SEQUENCE[n];
+  }
+
+  async function loadLevel(name, keepHUD = false) {
+    state.level.loaded = false;
+    try {
+      const level = await LevelLoader.load(name);
+      state.level = { ...level, loaded: true };
+      state.currentLevel = name;
+      resetToLoadedLevel();
+      if (!keepHUD) {
+        state.hud.setLives(3);
+        state.hud.setCoins(0);
+        state.hud.resetTimer();
+      }
+    } catch (err) {
+      console.error(err);
+      state.level = { loaded: true, name: 'error', platforms: [], spawn: {x:0,y:0}, bounds: {minX:-50,minY:-20,maxX:50,maxY:50},
+        tiles:null, coins:[], enemies:[], checkpoints:[], movingPlatforms:[], goal:null };
+      state.camera.clearBounds();
+      Tiles.buildFromLevel(state.level, PX_PER_M);
+      rebuildCoins(); rebuildEnemies(); rebuildCheckpoints(); rebuildMovingPlatforms(); rebuildGoal();
+      setCheckpointToSpawn();
+      respawnToCheckpoint();
+    }
   }
 
   function onResize(w, h, dpr) {
@@ -108,23 +145,19 @@
 
   function setGameState(s) {
     state.gameState = s;
-    if (s === 'menu')     state.menu.open('start');
-    if (s === 'paused')   state.menu.open('pause');
-    if (s === 'options')  state.menu.open('options');
+    if (state.menu && state.menu.open) {
+      if (s === 'menu')     state.menu.open('start');
+      if (s === 'paused')   state.menu.open('pause');
+      if (s === 'options')  state.menu.open('options');
+    }
   }
 
   function initMenuCallbacks() {
+    if (!state.menu.setCallbacks) return;
     state.menu.setCallbacks({
-      onStart: () => {
-        // frischer Start
-        restartLevelKeepingData();
-        setGameState('playing');
-      },
+      onStart: () => { loadLevel('level1'); setGameState('playing'); },
       onResume: () => setGameState('playing'),
-      onReset: () => {
-        restartLevelKeepingData();
-        setGameState('playing');
-      },
+      onReset: () => { restartLevelKeepingData(); setGameState('playing'); },
       onOpenOptions: () => setGameState('options'),
       onBackToStart: () => { setGameState('menu'); }
     });
@@ -140,21 +173,10 @@
     state.hud.resetTimer();
 
     initMenuCallbacks();
-    setGameState('menu'); // Beim Start im Startmenü
+    setGameState('menu');
 
-    LevelLoader.load('level1').then(level => {
-      state.level = { ...level, loaded: true };
-      resetToLoadedLevel();
-    }).catch(err => {
-      console.error(err);
-      state.level = { loaded: true, name: 'error', platforms: [], spawn: {x:0,y:0}, bounds: {minX:-50,minY:-20,maxX:50,maxY:50},
-        tiles:null, coins:[], enemies:[], checkpoints:[], movingPlatforms:[] };
-      state.camera.clearBounds();
-      Tiles.buildFromLevel(state.level, PX_PER_M);
-      rebuildCoins(); rebuildEnemies(); rebuildCheckpoints(); rebuildMovingPlatforms();
-      setCheckpointToSpawn();
-      respawnToCheckpoint();
-    });
+    // Level 1 initial laden (im Startmenü sichtbar)
+    loadLevel('level1');
 
     state._inited = true;
   }
@@ -179,7 +201,6 @@
   }
 
   function handleGlobalToggles() {
-    // Pause-Taste: P/Esc
     const wantPause = Input.pressed('KeyP') || Input.pressed('Escape');
     if (wantPause && state.level.loaded) {
       if (state.gameState === 'playing') setGameState('paused');
@@ -191,18 +212,10 @@
     state.time += dt;
     initOnce();
     handleGlobalToggles();
-
-    // Hintergrund-Animationen etc. laufen weiter; Gameplay je nach State
     if (!state.level.loaded) return;
 
     if (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options') {
-      // Menü bekommt Eingaben, aber keine Spielwelt-Updates (Timer pausiert in Pause/Options)
-      state.menu.update(Input);
-      if (state.gameState === 'menu') {
-        // Im Startmenü lassen wir HUD-Timer ruhen (bleibt 0)
-      } else if (state.gameState === 'paused' || state.gameState === 'options') {
-        // nichts tickt (keine HUD- oder Spielerupdates)
-      }
+      if (state.menu.update) state.menu.update(Input);
       return;
     }
 
@@ -247,6 +260,14 @@
       if (activated) break;
     }
 
+    // Goal (Levelwechsel)
+    if (state.goal) {
+      state.goal.check(state.player, () => {
+        const next = nextLevelName();
+        loadLevel(next);
+      });
+    }
+
     // Mitnahme bewegliche Plattform
     let ground = null;
     if (state.player.onGround) ground = findMovingGroundUnderPlayer();
@@ -269,7 +290,6 @@
     state.hud.update(dt);
     state.fx.update(dt);
 
-    // Manueller Reset (während Spiel)
     if (Input.pressed('KeyR')) {
       resetAllCoinsVisible();
       state.hud.setCoins(0);
@@ -293,7 +313,6 @@
   }
 
   function onRender(ctx) {
-    // Hintergrund (läuft immer)
     Back.draw(ctx, state.viewport.w, state.viewport.h, state.camera.x, state.camera.y, state.time);
 
     if (!state.level.loaded) {
@@ -304,41 +323,32 @@
       return;
     }
 
-    // Welt zeichnen (auch im Menü sichtbar als Hintergrund)
     Tiles.draw(ctx, state.viewport.w, state.viewport.h, state.camera, PX_PER_M);
 
     for (const p of state.level.platforms) drawRect(ctx, p.x, p.y, p.w, p.h, 'rgba(17,20,28,0.65)');
     for (const m of state.mplats) m.draw(ctx, worldToScreen, PX_PER_M);
     for (const c of state.coins) c.draw(ctx, worldToScreen, PX_PER_M, state.time);
     for (const e of state.enemies) e.draw(ctx, worldToScreen, PX_PER_M, state.time);
-    for (const cp of state.checkpoints) cp.draw(
-      ctx, worldToScreen, PX_PER_M, state.time,
+    for (const cp of state.checkpoints) cp.draw(ctx, worldToScreen, PX_PER_M, state.time,
       Math.abs(cp.respawnX - state.checkpoint.x) < 0.01 && Math.abs(cp.respawnY - state.checkpoint.y) < 0.01
     );
 
-    // Spieler (nur in playing sichtbar ohne Overlay-Dimmung)
-    if (state.gameState === 'playing') {
-      if (state.time < state.invulnTill) {
-        ctx.save();
-        ctx.globalAlpha = 0.6 + Math.sin(state.time * 30) * 0.2;
-        state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
-        ctx.restore();
-      } else {
-        state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
-      }
+    if (state.goal) state.goal.draw(ctx, worldToScreen, PX_PER_M, state.time);
+
+    // Spieler (inkl. Hit-Feedback)
+    if (state.time < state.invulnTill) {
+      ctx.save();
+      ctx.globalAlpha = 0.6 + Math.sin(state.time * 30) * 0.2;
+      state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
+      ctx.restore();
     } else {
-      // In Menüzuständen zeichnen wir den Spieler auch, aber Menü dimmt darüber
       state.player.draw(ctx, state.viewport, PX_PER_M, worldToScreen);
     }
 
-    // Partikel
     state.fx.draw(ctx, worldToScreen, PX_PER_M);
-
-    // HUD (Timer pausiert automatisch, weil wir ihn im Update nicht erhöhen)
     state.hud.draw(ctx);
 
-    // Menü-Overlay bei menu/pause/options
-    if (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options') {
+    if (state.menu && (state.gameState === 'menu' || state.gameState === 'paused' || state.gameState === 'options')) {
       state.menu.draw(ctx, state.viewport.w, state.viewport.h);
     }
 
@@ -346,10 +356,7 @@
     ctx.fillStyle = 'rgba(255,255,255,.6)';
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText(
-      `state=${state.gameState} lives=${state.hud.lives} coins=${state.hud.coins}`,
-      state.viewport.w - 10, state.viewport.h - 10
-    );
+    ctx.fillText(`lvl=${state.currentLevel} lives=${state.hud.lives} coins=${state.hud.coins}`, state.viewport.w - 10, state.viewport.h - 10);
   }
 
   const engine = new Engine(canvas, { onUpdate, onRender, onResize });

@@ -38,7 +38,7 @@ window.Game.Entities.Player = (function () {
       jumpForce: 17,
       coyoteTime: 0.10,
       jumpBuffer: 0.12,
-      extraJumps: 0,
+      extraJumps: 1,
 
       // Status
       onGround: false,
