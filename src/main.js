@@ -1,5 +1,5 @@
-// Game Main – Save/Load (Progress & Einstellungen) mit localStorage
-// Speichert: freigeschaltete Level, zuletzt gespieltes Level, Optionen (Lautstaerke, Steuerung)
+// Game Main – Mobile Touch-Controls (On-Screen) integriert
+// Touch-Buttons simulieren Keyboard (Arrow/WASD je nach Optionen) → keine Engine-Anpassungen nötig.
 
 (function () {
   'use strict';
@@ -21,6 +21,7 @@
   const FX    = window.Game.Effects.Particles;
   const Menu  = window.Game.UI.Menu;
   const Save  = window.Game.State.Save;
+  const Touch = window.Game.UI.TouchControls;
 
   const canvas = document.getElementById('game');
   const PX_PER_M = 40;
@@ -41,8 +42,9 @@
     player: Player.create(0, 0),
     camera: Camera.create(),
     hud: HUD.create(),
-    fx: FX.create(),
+    fx: window.Game.Effects?.Particles?.create() || { update(){}, draw(){} },
     menu: Menu.create(),
+    touch: null,
 
     coins: [],
     enemies: [],
@@ -104,7 +106,6 @@
   }
 
   function restartLevelKeepingData() {
-    // Restart des gleichen Levels (HUD resettet, Fortschritt bleibt gespeichert)
     loadLevel(state.currentLevel, true);
     state.hud.setLives(3);
     state.hud.setCoins(0);
@@ -117,7 +118,6 @@
   }
 
   function persist() {
-    // Schreibe aktuellen Stand in localStorage
     Save.save({
       version: 1,
       unlocked: state.save.unlocked,
@@ -133,7 +133,6 @@
       state.level = { ...level, loaded: true };
       state.currentLevel = name;
 
-      // Remember last played
       state.save.lastLevel = name;
       persist();
 
@@ -160,9 +159,10 @@
   }
 
   function applyLoadedOptions() {
-    // Aktuell: Optionen werden nur gespeichert/angezeigt.
-    // Lautstaerke kann spaeter auf Audio gemappt werden; Steuerung koennte in Input einfliessen.
+    // Menü-Optionen spiegeln
     state.menu.setOptions(state.save.options);
+    // Mapping für TouchControls anpassen
+    if (state.touch) state.touch.setMapping(state.save.options.controls === 'arrows' ? 'arrows' : 'wasd');
   }
 
   function setGameState(s) {
@@ -175,7 +175,6 @@
   function initMenuCallbacks() {
     state.menu.setCallbacks({
       onStart: () => {
-        // Starte beim zuletzt gespielten Level, falls vorhanden und freigeschaltet
         const startLevel = state.save.unlocked[state.save.lastLevel] ? state.save.lastLevel : 'level1';
         loadLevel(startLevel);
         setGameState('playing');
@@ -186,9 +185,16 @@
       onBackToStart: () => { setGameState('menu'); },
       onOptionsChanged: (opts) => {
         state.save.options = Object.assign({}, state.save.options, opts);
+        applyLoadedOptions();
         persist();
       }
     });
+  }
+
+  function initTouchControls() {
+    if (!Touch || state.touch) return;
+    state.touch = Touch.create();
+    state.touch.setMapping(state.save.options.controls === 'arrows' ? 'arrows' : 'wasd');
   }
 
   function initOnce() {
@@ -196,19 +202,18 @@
     Input.init();
     state.camera.setOffsets(0, 2);
 
-    // HUD Start
     state.hud.setLives(3);
     state.hud.setCoins(0);
     state.hud.resetTimer();
 
-    // Save laden & anwenden
     state.save = Save.load();
-    applyLoadedOptions();
-
     initMenuCallbacks();
     setGameState('menu');
 
-    // lade im Hintergrund das zuletzt gespielte Level (sichtbar als Hintergrund)
+    // Touch-Controls initialisieren (zeigen sich nur auf Touch-Geräten)
+    initTouchControls();
+    applyLoadedOptions();
+
     const initial = state.save.unlocked[state.save.lastLevel] ? state.save.lastLevel : 'level1';
     loadLevel(initial);
 
@@ -290,7 +295,6 @@
 
     if (state.goal) {
       state.goal.check(state.player, () => {
-        // Beim Ziel: naechstes Level freischalten und laden
         const next = nextLevelName();
         state.save.unlocked[next] = true;
         Save.unlock(next);
@@ -385,8 +389,7 @@
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
     const unlockedList = Object.keys(state.save.unlocked).filter(k => state.save.unlocked[k]).sort().join(',');
-    ctx.fillText(`lvl=${state.currentLevel} unlocked=[${unlockedList}] vol=${(state.save.options.volume*100|0)}%`,
-      state.viewport.w - 10, state.viewport.h - 10);
+    ctx.fillText(`lvl=${state.currentLevel} unlocked=[${unlockedList}]`, state.viewport.w - 10, state.viewport.h - 10);
   }
 
   const engine = new Engine(canvas, { onUpdate, onRender, onResize });
