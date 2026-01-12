@@ -1,19 +1,20 @@
-// Game Main – Gegner-Patrouille + Schaden/Respawn am Checkpoint (Spawn als Checkpoint).
+// Game Main – Checkpoints + Lives-System (Restart bei 0 Lives).
 
 (function () {
   'use strict';
 
   const { Engine } = window.Game.Engine;
-  const Input = window.Game.Input;
-  const Player = window.Game.Entities.Player;
-  const Coin = window.Game.Entities.Coin;
-  const Enemy = window.Game.Entities.PatrolEnemy;
-  const Camera = window.Game.Camera;
+  const Input   = window.Game.Input;
+  const Player  = window.Game.Entities.Player;
+  const Coin    = window.Game.Entities.Coin;
+  const Enemy   = window.Game.Entities.PatrolEnemy;
+  const Cp      = window.Game.Entities.Checkpoint;
+  const Camera  = window.Game.Camera;
   const LevelLoader = window.Game.World.LevelLoader;
 
-  const Back = window.Game.Render.Background;
+  const Back  = window.Game.Render.Background;
   const Tiles = window.Game.Render.Tiles;
-  const HUD = window.Game.UI.HUD;
+  const HUD   = window.Game.UI.HUD;
 
   const canvas = document.getElementById('game');
   const PX_PER_M = 40;
@@ -26,7 +27,7 @@
     frictionGround: 18,
     frictionAir: 2,
 
-    level: { loaded: false, name: '', platforms: [], spawn: { x:0, y:0 }, bounds: null, coins: [], enemies: [] },
+    level: { loaded: false, name: '', platforms: [], spawn: { x:0, y:0 }, bounds: null, coins: [], enemies: [], checkpoints: [] },
 
     player: Player.create(0, 0),
     camera: Camera.create(),
@@ -34,15 +35,20 @@
 
     coins: [],
     enemies: [],
+    checkpoints: [],
 
-    checkpoint: { x: 0, y: 0 },     // aktueller Checkpoint (Prompt 10 wird Checkpoints als Entitaet hinzufügen)
-    invulnTill: 0                    // Unverwundbarkeit bis Zeitstempel (nach Treffer)
+    checkpoint: { x: 0, y: 0 }, // aktueller Respawn
+    invulnTill: 0
   };
 
   // ---------- Helpers ----------
+  function setCheckpoint(x, y) {
+    state.checkpoint.x = x;
+    state.checkpoint.y = y;
+  }
+
   function setCheckpointToSpawn() {
-    state.checkpoint.x = state.level.spawn.x;
-    state.checkpoint.y = state.level.spawn.y;
+    setCheckpoint(state.level.spawn.x, state.level.spawn.y);
   }
 
   function respawnToCheckpoint() {
@@ -50,37 +56,52 @@
     const cx = state.player.x + state.player.w * 0.5;
     const cy = state.player.y + state.player.h * 0.5;
     state.camera.snapTo(cx, cy);
-    // kurze Nach-Treffer-Unverwundbarkeit
-    state.invulnTill = state.time + 1.0;
+    state.invulnTill = state.time + 1.0; // kurze Nach-Treffer-Unverwundbarkeit
   }
 
-  function resetAllCoinsVisible() {
-    for (const c of state.coins) c.collected = false;
-  }
+  function resetAllCoinsVisible() { for (const c of state.coins) c.collected = false; }
 
-  function onPlayerHit() {
-    if (state.time < state.invulnTill) return; // noch unverwundbar
-    state.hud.addLives(-1);
-    respawnToCheckpoint();
-  }
-
-  function buildCoins() {
-    state.coins = (state.level.coins || []).map(c => Coin.create(c.x, c.y, 0.35));
-  }
-
-  function buildEnemies() {
-    state.enemies = (state.level.enemies || [])
-      .filter(e => (e.type || 'patrol') === 'patrol')
-      .map(e => Enemy.create(e));
+  function rebuildCoins()   { state.coins   = (state.level.coins   || []).map(c => Coin.create(c.x, c.y, 0.35)); }
+  function rebuildEnemies() { state.enemies = (state.level.enemies || []).map(e => Enemy.create(e)); }
+  function rebuildCheckpoints() {
+    state.checkpoints = (state.level.checkpoints || []).map(cp => {
+      const inst = Cp.create(cp.x, cp.y);
+      // Spawn-Checkpoint soll direkt aktiv sein
+      if (Math.abs(cp.x - state.level.spawn.x) < 0.01 && Math.abs(cp.y - state.level.spawn.y) < 0.01) {
+        inst.active = true;
+      }
+      return inst;
+    });
   }
 
   function resetToLoadedLevel() {
     const b = state.level.bounds;
     state.camera.setBounds(b.minX, b.minY, b.maxX, b.maxY);
     Tiles.buildFromLevel(state.level, PX_PER_M);
-    buildCoins();
-    buildEnemies();
+    rebuildCoins();
+    rebuildEnemies();
+    rebuildCheckpoints();
     setCheckpointToSpawn();
+    respawnToCheckpoint();
+  }
+
+  function restartLevelKeepingData() {
+    // kompletter Level-Reset (Coins sichtbar, Gegner zurück, Checkpoints zurück)
+    resetToLoadedLevel();
+    // HUD zurück
+    state.hud.setLives(3);
+    state.hud.setCoins(0);
+    state.hud.resetTimer();
+  }
+
+  function onPlayerHit() {
+    if (state.time < state.invulnTill) return; // noch unverwundbar
+    state.hud.addLives(-1);
+    if (state.hud.lives <= 0) {
+      // Level neu starten
+      restartLevelKeepingData();
+      return;
+    }
     respawnToCheckpoint();
   }
 
@@ -107,11 +128,10 @@
       resetToLoadedLevel();
     }).catch(err => {
       console.error(err);
-      state.level = { loaded: true, name: 'error', platforms: [], spawn: {x:0,y:0}, bounds: {minX:-50,minY:-20,maxX:50,maxY:50}, coins: [], enemies: [] };
+      state.level = { loaded: true, name: 'error', platforms: [], spawn: {x:0,y:0}, bounds: {minX:-50,minY:-20,maxX:50,maxY:50}, coins: [], enemies: [], checkpoints: [] };
       state.camera.clearBounds();
       Tiles.buildFromLevel(state.level, PX_PER_M);
-      buildCoins();
-      buildEnemies();
+      rebuildCoins(); rebuildEnemies(); rebuildCheckpoints();
       setCheckpointToSpawn();
       respawnToCheckpoint();
     });
@@ -122,27 +142,28 @@
   function onUpdate(dt) {
     state.time += dt;
     initOnce();
-
     if (!state.level.loaded) return;
 
     // Spieler
     state.player.update(
-      state.time,
-      dt,
-      Input,
-      state.level.platforms,
+      state.time, dt, Input, state.level.platforms,
       { gravity: state.gravity, frictionGround: state.frictionGround, frictionAir: state.frictionAir }
     );
 
     // Coins
-    for (const c of state.coins) {
-      c.tryCollect(state.player, () => state.hud.addCoins(1));
-    }
+    for (const c of state.coins) c.tryCollect(state.player, () => state.hud.addCoins(1));
 
-    // Enemies bewegen & Schaden pruefen
-    for (const e of state.enemies) {
-      e.update(dt);
-      e.checkHit(state.player, onPlayerHit);
+    // Enemies
+    for (const e of state.enemies) { e.update(dt); e.checkHit(state.player, onPlayerHit); }
+
+    // Checkpoints aktivieren
+    for (const cp of state.checkpoints) {
+      const activated = cp.tryActivate(state.player, (which) => {
+        // Nur einen als "aktiv" markieren, andere deaktivieren
+        for (const other of state.checkpoints) if (other !== which) other.active = false;
+        setCheckpoint(which.respawnX, which.respawnY);
+      });
+      if (activated) break; // pro Frame nur einen neu aktivieren
     }
 
     // Kamera
@@ -153,15 +174,8 @@
     // HUD
     state.hud.update(dt);
 
-    // Reset (kompletter Level-Reset)
-    if (Input.pressed('KeyR')) {
-      resetAllCoinsVisible();
-      state.hud.setCoins(0);
-      setCheckpointToSpawn();
-      respawnToCheckpoint();
-      state.hud.resetTimer();
-      state.hud.setLives(3);
-    }
+    // Manuelles Reset (kompletter Neustart)
+    if (Input.pressed('KeyR')) restartLevelKeepingData();
   }
 
   function worldToScreen(x, y) {
@@ -192,9 +206,7 @@
     Tiles.draw(ctx, state.viewport.w, state.viewport.h, state.camera, PX_PER_M);
 
     // Plattformkanten
-    for (const p of state.level.platforms) {
-      drawRect(ctx, p.x, p.y, p.w, p.h, 'rgba(17,20,28,0.65)');
-    }
+    for (const p of state.level.platforms) drawRect(ctx, p.x, p.y, p.w, p.h, 'rgba(17,20,28,0.65)');
 
     // Coins
     for (const c of state.coins) c.draw(ctx, worldToScreen, PX_PER_M, state.time);
@@ -202,7 +214,12 @@
     // Enemies
     for (const e of state.enemies) e.draw(ctx, worldToScreen, PX_PER_M, state.time);
 
-    // Spieler (mit dezentem Hit-Feedback)
+    // Checkpoints
+    for (const cp of state.checkpoints) cp.draw(ctx, worldToScreen, PX_PER_M, state.time,
+      Math.abs(cp.respawnX - state.checkpoint.x) < 0.01 && Math.abs(cp.respawnY - state.checkpoint.y) < 0.01
+    );
+
+    // Spieler (Hit-Feedback)
     if (state.time < state.invulnTill) {
       ctx.save();
       ctx.globalAlpha = 0.6 + Math.sin(state.time * 30) * 0.2;
@@ -220,9 +237,8 @@
     ctx.font = '12px system-ui, sans-serif';
     ctx.textAlign = 'right';
     ctx.fillText(
-      `lives=${state.hud.lives} coins=${state.hud.coins} cp=(${state.checkpoint.x.toFixed(1)},${state.checkpoint.y.toFixed(1)})`,
-      state.viewport.w - 10,
-      state.viewport.h - 10
+      `lives=${state.hud.lives} cp=(${state.checkpoint.x.toFixed(1)},${state.checkpoint.y.toFixed(1)})`,
+      state.viewport.w - 10, state.viewport.h - 10
     );
   }
 
